@@ -162,6 +162,97 @@ func TestLLMSynthesizerStripErrorAttribution(t *testing.T) {
 	}
 }
 
+func TestStripServiceNamesShortNameSkipped(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, true)
+
+	results := []*services.Result{
+		{Service: "ab", Tool: "search", Error: `connection to ab failed at /ab/endpoint`},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// Short service name "ab" should NOT be replaced — would corrupt text
+	if strings.Contains(provider.lastUser, "[service]") {
+		t.Error("short service name 'ab' should not be stripped")
+	}
+	if !strings.Contains(provider.lastUser, "ab") {
+		t.Error("expected 'ab' to remain in error text")
+	}
+}
+
+func TestLLMSynthesizerStripDataAttribution(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, true)
+
+	results := []*services.Result{
+		{Service: "sam-gov", Tool: "search", Data: []byte(`{"source": "sam-gov", "results": []}`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// Service name in response body must be stripped when sending to remote LLM
+	if strings.Contains(provider.lastUser, "sam-gov") {
+		t.Error("attribution leak: sam-gov in response data sent to LLM")
+	}
+	if !strings.Contains(provider.lastUser, "[service]") {
+		t.Error("expected service name in data replaced with [service]")
+	}
+}
+
+func TestStripServiceNamesOverlappingNames(t *testing.T) {
+	// "news-api" must be replaced as a whole, not corrupted into "[service]-api"
+	results := []*services.Result{
+		{Service: "news"},
+		{Service: "news-api"},
+	}
+	got := stripServiceNames("data from news-api and news feed", results)
+	if strings.Contains(got, "news-api") {
+		t.Error("news-api should have been replaced")
+	}
+	if strings.Contains(got, "[service]-api") {
+		t.Error("substring corruption: got [service]-api instead of [service]")
+	}
+	want := "data from [service] and [service] feed"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestOpenRouterTrailingSlash(t *testing.T) {
+	p := NewOpenRouterProvider("https://api.example.com/v1/", "key", "model")
+	if p.endpoint != "https://api.example.com/v1" {
+		t.Errorf("expected trailing slash trimmed, got: %s", p.endpoint)
+	}
+}
+
+func TestOpenRouterNoTrailingSlash(t *testing.T) {
+	p := NewOpenRouterProvider("https://api.example.com/v1", "key", "model")
+	if p.endpoint != "https://api.example.com/v1" {
+		t.Errorf("expected endpoint unchanged, got: %s", p.endpoint)
+	}
+}
+
+func TestOllamaTrailingSlash(t *testing.T) {
+	p := NewOllamaProvider("http://localhost:11434/", "model")
+	if p.endpoint != "http://localhost:11434" {
+		t.Errorf("expected trailing slash trimmed, got: %s", p.endpoint)
+	}
+}
+
+func TestOllamaNoTrailingSlash(t *testing.T) {
+	p := NewOllamaProvider("http://localhost:11434", "model")
+	if p.endpoint != "http://localhost:11434" {
+		t.Errorf("expected endpoint unchanged, got: %s", p.endpoint)
+	}
+}
+
 func TestLLMSynthesizerPreserveAttribution(t *testing.T) {
 	provider := &fakeProvider{}
 	synth := NewLLMSynthesizer(provider, false)

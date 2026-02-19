@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -206,6 +207,95 @@ func TestValidateBadRenderingImages(t *testing.T) {
 	}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected validation error for bad rendering.images")
+	}
+}
+
+func TestValidateRelativeToolPath(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{
+				Name:     "svc",
+				Type:     "rest",
+				Endpoint: "http://example.com",
+				Tools: []ToolConfig{
+					{Name: "search", Method: "GET", Path: "search"},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for relative tool path")
+	}
+	if !strings.Contains(err.Error(), "relative path") {
+		t.Errorf("expected relative path error, got: %v", err)
+	}
+}
+
+func TestValidateLLMProviderMissingName(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{{Type: "ollama"}},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for missing provider name")
+	}
+	if !strings.Contains(err.Error(), "missing name") {
+		t.Errorf("expected missing name error, got: %v", err)
+	}
+}
+
+func TestValidateLLMProviderDuplicateName(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{Name: "llm-a", Type: "ollama"},
+				{Name: "llm-a", Type: "ollama"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for duplicate provider name")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("expected duplicate error, got: %v", err)
+	}
+}
+
+func TestValidateLLMProviderUnknownType(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{Name: "llm-a", Type: "chatgpt"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for unknown provider type")
+	}
+	if !strings.Contains(err.Error(), "unknown type") {
+		t.Errorf("expected unknown type error, got: %v", err)
+	}
+}
+
+func TestValidateLLMProviderUnknownPrivacy(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{Name: "llm-a", Type: "ollama", Privacy: "hybrid"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for unknown privacy")
+	}
+	if !strings.Contains(err.Error(), "unknown privacy") {
+		t.Errorf("expected unknown privacy error, got: %v", err)
 	}
 }
 

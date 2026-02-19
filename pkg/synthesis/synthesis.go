@@ -4,6 +4,7 @@ package synthesis
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -117,7 +118,11 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 			userPrompt.WriteString(errMsg)
 			userPrompt.WriteString("\n")
 		} else {
-			userPrompt.WriteString(string(r.Data))
+			data := string(r.Data)
+			if l.stripAttribution {
+				data = stripServiceNames(data, results)
+			}
+			userPrompt.WriteString(data)
 			userPrompt.WriteString("\n")
 		}
 		userPrompt.WriteString("\n")
@@ -127,13 +132,23 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 }
 
 // stripServiceNames replaces any service name found in text with a generic placeholder.
+// Names are sorted longest-first to prevent substring corruption (e.g., "news-api"
+// must be replaced before "news" to avoid producing "[service]-api").
 func stripServiceNames(text string, results []*services.Result) string {
+	var names []string
 	seen := make(map[string]bool)
 	for _, r := range results {
-		if r.Service != "" && !seen[r.Service] {
-			text = strings.ReplaceAll(text, r.Service, "[service]")
-			seen[r.Service] = true
+		if len(r.Service) < 3 || seen[r.Service] {
+			continue
 		}
+		seen[r.Service] = true
+		names = append(names, r.Service)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return len(names[i]) > len(names[j])
+	})
+	for _, name := range names {
+		text = strings.ReplaceAll(text, name, "[service]")
 	}
 	return text
 }

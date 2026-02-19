@@ -33,3 +33,32 @@
 ## Future: injectable clock for tests
 - `TestSaveNoClobber` sleeps 1s for second-precision uniqueness — correct but slow
 - Inject a clock interface if test suite grows
+
+## buildURL must merge, not replace, query params
+- `resolved.RawQuery = query.Encode()` clobbers query params from the tool path
+- Tool paths can contain static query params (e.g., `/search?type=active`)
+- Fix: use `resolved.Query()` to get existing params, then `Set()` mapped params on top
+- `applyAuth` for `api_key` already does this correctly (calls `req.URL.Query()`)
+
+## Don't duplicate utility functions across packages
+- Two packages (`reports` and `context`) had independent `sanitize` functions with different behavior
+- `reports` allowed underscores; `context` collapsed double-dashes
+- Names from one package wouldn't round-trip through the other
+- Extracted shared `pkg/slug.Sanitize` — single behavior, both packages import it
+
+## Warnings belong on stderr, not stdout
+- `fmt.Printf` for warning messages in `indexContext` pollutes stdout
+- stdout is for report output; stderr is for diagnostics
+- Use `fmt.Fprintf(os.Stderr, ...)` for all warning/diagnostic messages
+- Be consistent: CLI wiring uses stderr for ledger init warnings, so executor should too
+
+## Raw result storage assumes JSON
+- `reports.Save` hardcodes `.json` extension for raw results
+- REST services overwhelmingly return JSON, but this is an assumption not a guarantee
+- Documented with comment; if non-JSON sources are added, detect content type at save time
+
+## Hand-rolled YAML front matter parsing is intentionally simple
+- `context.parseEntry` uses line-by-line scanning instead of a YAML library
+- This avoids a YAML dependency in the context package
+- The parser will break on multi-line values or labels containing `: `
+- Acceptable because Burrow controls all writes — just don't put colons in labels without quoting

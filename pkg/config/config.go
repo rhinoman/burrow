@@ -34,7 +34,7 @@ type ServiceConfig struct {
 
 // AuthConfig defines how to authenticate with a service.
 type AuthConfig struct {
-	Method   string `yaml:"method"` // api_key | bearer | user_agent | none
+	Method   string `yaml:"method"` // api_key | api_key_header | bearer | user_agent | none
 	Key      string `yaml:"key,omitempty"`
 	KeyParam string `yaml:"key_param,omitempty"` // query param name for api_key auth (default: "api_key")
 	Token    string `yaml:"token,omitempty"`
@@ -47,6 +47,7 @@ type ToolConfig struct {
 	Description string        `yaml:"description,omitempty"`
 	Method      string        `yaml:"method"`
 	Path        string        `yaml:"path"`
+	Body        string        `yaml:"body,omitempty"` // param name whose value becomes the POST body
 	Params      []ParamConfig `yaml:"params,omitempty"`
 }
 
@@ -195,10 +196,45 @@ func Validate(cfg *Config) error {
 		}
 
 		switch svc.Auth.Method {
-		case "api_key", "bearer", "user_agent", "none", "":
+		case "api_key", "api_key_header", "bearer", "user_agent", "none", "":
 			// valid
 		default:
 			return fmt.Errorf("service %q has unknown auth method %q", svc.Name, svc.Auth.Method)
+		}
+	}
+
+	// Validate tool paths
+	for _, svc := range cfg.Services {
+		for _, tool := range svc.Tools {
+			if tool.Path != "" && !strings.HasPrefix(tool.Path, "/") {
+				return fmt.Errorf("service %q tool %q has relative path %q (must start with /)", svc.Name, tool.Name, tool.Path)
+			}
+		}
+	}
+
+	// Validate LLM providers
+	provNames := make(map[string]bool)
+	for _, prov := range cfg.LLM.Providers {
+		if prov.Name == "" {
+			return fmt.Errorf("LLM provider missing name")
+		}
+		if provNames[prov.Name] {
+			return fmt.Errorf("duplicate LLM provider name: %q", prov.Name)
+		}
+		provNames[prov.Name] = true
+
+		switch prov.Type {
+		case "ollama", "openrouter", "passthrough", "":
+			// valid
+		default:
+			return fmt.Errorf("LLM provider %q has unknown type %q", prov.Name, prov.Type)
+		}
+
+		switch prov.Privacy {
+		case "local", "remote", "":
+			// valid
+		default:
+			return fmt.Errorf("LLM provider %q has unknown privacy %q", prov.Name, prov.Privacy)
 		}
 	}
 

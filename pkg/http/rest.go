@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/privacy"
 	"github.com/jcadam/burrow/pkg/services"
 )
 
@@ -23,18 +25,28 @@ type RESTService struct {
 }
 
 // NewRESTService creates a REST service from config. Each service gets its own
-// http.Client to support per-service proxy routing in the future.
-func NewRESTService(cfg config.ServiceConfig) *RESTService {
+// http.Client to support per-service proxy routing. If privacyCfg is non-nil,
+// a privacy transport is applied for referrer stripping, UA rotation, and
+// request minimization.
+func NewRESTService(cfg config.ServiceConfig, privacyCfg *privacy.Config) *RESTService {
 	tools := make(map[string]config.ToolConfig, len(cfg.Tools))
 	for _, tool := range cfg.Tools {
 		tools[tool.Name] = tool
 	}
+
+	// Each service gets its own transport to prevent connection pool sharing.
+	// Shared pools break compartmentalization (spec §2.2).
+	var transport http.RoundTripper = &http.Transport{}
+	if privacyCfg != nil {
+		transport = privacy.NewTransport(&http.Transport{}, *privacyCfg)
+	}
+
 	return &RESTService{
 		name:     cfg.Name,
 		endpoint: cfg.Endpoint,
 		auth:     cfg.Auth,
 		tools:    tools,
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client:   &http.Client{Timeout: 30 * time.Second, Transport: transport},
 	}
 }
 
@@ -52,9 +64,20 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 		return nil, fmt.Errorf("building URL: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, tc.Method, reqURL, nil)
+	var reqBody io.Reader
+	if tc.Body != "" {
+		if val, ok := params[tc.Body]; ok {
+			reqBody = strings.NewReader(val)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, tc.Method, reqURL, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	r.applyAuth(req)
@@ -113,8 +136,14 @@ func (r *RESTService) buildURL(tc config.ToolConfig, params map[string]string) (
 	}
 	resolved := base.ResolveReference(ref)
 
-	query := url.Values{}
+	// Merge mapped params with any existing query params from the tool path
+	// (e.g., /search?type=active). Mapped params take precedence on collision.
+	query := resolved.Query()
 	for _, pc := range tc.Params {
+		// Skip the body param — it's sent as the request body, not a query param
+		if tc.Body != "" && pc.Name == tc.Body {
+			continue
+		}
 		if val, ok := params[pc.Name]; ok {
 			query.Set(pc.MapsTo, val)
 		}
@@ -133,9 +162,17 @@ func (r *RESTService) applyAuth(req *http.Request) {
 		q := req.URL.Query()
 		q.Set(paramName, r.auth.Key)
 		req.URL.RawQuery = q.Encode()
+	case "api_key_header":
+		headerName := r.auth.KeyParam
+		if headerName == "" {
+			headerName = "X-API-Key"
+		}
+		req.Header.Set(headerName, r.auth.Key)
 	case "bearer":
 		req.Header.Set("Authorization", "Bearer "+r.auth.Token)
 	case "user_agent":
 		req.Header.Set("User-Agent", r.auth.Value)
+		// Signal the privacy transport to preserve this auth-required UA.
+		req.Header.Set("X-Burrow-Preserve-UA", "true")
 	}
 }

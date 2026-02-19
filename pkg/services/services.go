@@ -4,6 +4,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -60,7 +61,7 @@ func (r *Registry) Get(name string) (Service, error) {
 	return svc, nil
 }
 
-// List returns the names of all registered services.
+// List returns the names of all registered services, sorted alphabetically.
 func (r *Registry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -68,5 +69,6 @@ func (r *Registry) List() []string {
 	for name := range r.services {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }

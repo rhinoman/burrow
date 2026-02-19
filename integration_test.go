@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jcadam/burrow/pkg/config"
+	bcontext "github.com/jcadam/burrow/pkg/context"
 	bhttp "github.com/jcadam/burrow/pkg/http"
 	"github.com/jcadam/burrow/pkg/pipeline"
+	"github.com/jcadam/burrow/pkg/privacy"
 	"github.com/jcadam/burrow/pkg/render"
 	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
@@ -138,10 +141,10 @@ sources:
 		t.Fatalf("config.Validate: %v", err)
 	}
 
-	// 2. Build registry
+	// 2. Build registry (nil privacy config for basic test)
 	registry := services.NewRegistry()
 	for _, svcCfg := range cfg.Services {
-		svc := bhttp.NewRESTService(svcCfg)
+		svc := bhttp.NewRESTService(svcCfg, nil)
 		if err := registry.Register(svc); err != nil {
 			t.Fatalf("Register %q: %v", svcCfg.Name, err)
 		}
@@ -236,5 +239,186 @@ sources:
 	}
 	if rendered == "" {
 		t.Error("expected non-empty rendered output")
+	}
+}
+
+// TestPrivacyHeaders verifies that privacy transport strips/rotates headers.
+func TestPrivacyHeaders(t *testing.T) {
+	var receivedUA string
+	var receivedReferer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedUA = r.Header.Get("User-Agent")
+		receivedReferer = r.Header.Get("Referer")
+		w.Write([]byte(`{"ok": true}`))
+	}))
+	defer srv.Close()
+
+	privCfg := &privacy.Config{
+		StripReferrers:     true,
+		RandomizeUserAgent: true,
+		MinimizeRequests:   true,
+	}
+
+	svc := bhttp.NewRESTService(config.ServiceConfig{
+		Name:     "priv-test",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{Name: "fetch", Method: "GET", Path: "/data"},
+		},
+	}, privCfg)
+
+	result, err := svc.Execute(context.Background(), "fetch", nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+
+	if strings.Contains(receivedUA, "Go-http-client") {
+		t.Errorf("expected rotated UA, got default Go UA: %q", receivedUA)
+	}
+	if receivedReferer != "" {
+		t.Error("expected Referer stripped")
+	}
+}
+
+// TestContextLedgerAfterPipeline verifies that context entries are written after a pipeline run.
+func TestContextLedgerAfterPipeline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data": "test-value"}`))
+	}))
+	defer srv.Close()
+
+	burrowDir := t.TempDir()
+	reportsDir := filepath.Join(burrowDir, "reports")
+	contextDir := filepath.Join(burrowDir, "context")
+	os.MkdirAll(reportsDir, 0o755)
+
+	ledger, err := bcontext.NewLedger(contextDir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	registry := services.NewRegistry()
+	svc := bhttp.NewRESTService(config.ServiceConfig{
+		Name:     "test-api",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{Name: "fetch", Method: "GET", Path: "/data"},
+		},
+	}, nil)
+	registry.Register(svc)
+
+	synth := synthesis.NewPassthroughSynthesizer()
+	executor := pipeline.NewExecutor(registry, synth, reportsDir)
+	executor.SetLedger(ledger)
+
+	routine := &pipeline.Routine{
+		Name:   "context-test",
+		Report: pipeline.ReportConfig{Title: "Context Test"},
+		Sources: []pipeline.SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	_, err = executor.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify context entries
+	contextReports, err := ledger.List(bcontext.TypeReport, 0)
+	if err != nil {
+		t.Fatalf("List reports: %v", err)
+	}
+	if len(contextReports) != 1 {
+		t.Errorf("expected 1 report in context, got %d", len(contextReports))
+	}
+
+	contextResults, err := ledger.List(bcontext.TypeResult, 0)
+	if err != nil {
+		t.Fatalf("List results: %v", err)
+	}
+	if len(contextResults) != 1 {
+		t.Errorf("expected 1 result in context, got %d", len(contextResults))
+	}
+
+	// Search context
+	matches, err := ledger.Search("test-value")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Error("expected to find test-value in context search")
+	}
+}
+
+// TestParallelExecution verifies parallel execution with timing.
+func TestParallelExecution(t *testing.T) {
+	// Create 3 servers that each take 100ms to respond
+	makeSlowServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(100 * time.Millisecond)
+			w.Write([]byte(`{"ok": true}`))
+		}))
+	}
+
+	srv1 := makeSlowServer()
+	srv2 := makeSlowServer()
+	srv3 := makeSlowServer()
+	defer srv1.Close()
+	defer srv2.Close()
+	defer srv3.Close()
+
+	burrowDir := t.TempDir()
+	reportsDir := filepath.Join(burrowDir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	registry := services.NewRegistry()
+	for i, srv := range []*httptest.Server{srv1, srv2, srv3} {
+		name := []string{"api-a", "api-b", "api-c"}[i]
+		svc := bhttp.NewRESTService(config.ServiceConfig{
+			Name:     name,
+			Type:     "rest",
+			Endpoint: srv.URL,
+			Auth:     config.AuthConfig{Method: "none"},
+			Tools: []config.ToolConfig{
+				{Name: "fetch", Method: "GET", Path: "/data"},
+			},
+		}, nil)
+		registry.Register(svc)
+	}
+
+	synth := synthesis.NewPassthroughSynthesizer()
+	executor := pipeline.NewExecutor(registry, synth, reportsDir)
+
+	routine := &pipeline.Routine{
+		Name:   "parallel-test",
+		Report: pipeline.ReportConfig{Title: "Parallel Test"},
+		Sources: []pipeline.SourceConfig{
+			{Service: "api-a", Tool: "fetch"},
+			{Service: "api-b", Tool: "fetch"},
+			{Service: "api-c", Tool: "fetch"},
+		},
+	}
+
+	start := time.Now()
+	report, err := executor.Run(context.Background(), routine)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(report.Markdown, "**Successful:** 3") {
+		t.Error("expected 3 successful sources")
+	}
+	// 3 services at 100ms each, parallel should complete well under 300ms
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("expected parallel execution, took %v (should be < 250ms)", elapsed)
 	}
 }

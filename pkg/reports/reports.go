@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jcadam/burrow/pkg/slug"
 )
 
 // Report represents a generated report on disk.
@@ -21,36 +23,51 @@ type Report struct {
 	Sources  []string // list of source files in data/
 }
 
-// Save writes a report to disk under baseDir/YYYY-MM-DDT150405-routine-name/.
-// The second-precision timestamp prevents collisions when running the same routine
-// multiple times per day. Raw results are stored in a data/ subdirectory.
-func Save(baseDir string, routine string, markdown string, rawResults map[string][]byte) (*Report, error) {
+// Create writes raw results to disk under baseDir/YYYY-MM-DDT150405-routine-name/data/.
+// It returns the report directory path. Call Finish after synthesis to write report.md.
+// This ensures raw results are persisted before synthesis (spec §4.1).
+func Create(baseDir string, routine string, rawResults map[string][]byte) (string, error) {
 	now := time.Now()
-	date := now.Format("2006-01-02")
-	dirName := now.Format("2006-01-02T150405") + "-" + sanitize(routine)
+	dirName := now.Format("2006-01-02T150405") + "-" + slug.Sanitize(routine)
 	reportDir := filepath.Join(baseDir, dirName)
 
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating report directory: %w", err)
+		return "", fmt.Errorf("creating report directory: %w", err)
 	}
 
+	if len(rawResults) > 0 {
+		dataDir := filepath.Join(reportDir, "data")
+		if err := os.MkdirAll(dataDir, 0o755); err != nil {
+			return "", fmt.Errorf("creating data directory: %w", err)
+		}
+		for name, data := range rawResults {
+			// Raw results are stored as .json — REST services return JSON overwhelmingly.
+			// If non-JSON sources are added, detect content type here.
+			path := filepath.Join(dataDir, slug.Sanitize(name)+".json")
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				return "", fmt.Errorf("writing raw result %q: %w", name, err)
+			}
+		}
+	}
+
+	return reportDir, nil
+}
+
+// Finish writes the synthesized markdown to an existing report directory
+// and returns the completed Report.
+func Finish(reportDir string, routine string, markdown string) (*Report, error) {
 	reportPath := filepath.Join(reportDir, "report.md")
 	if err := os.WriteFile(reportPath, []byte(markdown), 0o644); err != nil {
 		return nil, fmt.Errorf("writing report: %w", err)
 	}
 
+	date, _ := parseReportDirName(filepath.Base(reportDir))
+
 	var sources []string
-	if len(rawResults) > 0 {
-		dataDir := filepath.Join(reportDir, "data")
-		if err := os.MkdirAll(dataDir, 0o755); err != nil {
-			return nil, fmt.Errorf("creating data directory: %w", err)
-		}
-		for name, data := range rawResults {
-			path := filepath.Join(dataDir, sanitize(name)+".json")
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				return nil, fmt.Errorf("writing raw result %q: %w", name, err)
-			}
-			sources = append(sources, path)
+	dataDir := filepath.Join(reportDir, "data")
+	if entries, err := os.ReadDir(dataDir); err == nil {
+		for _, e := range entries {
+			sources = append(sources, filepath.Join(dataDir, e.Name()))
 		}
 	}
 
@@ -61,6 +78,15 @@ func Save(baseDir string, routine string, markdown string, rawResults map[string
 		Markdown: markdown,
 		Sources:  sources,
 	}, nil
+}
+
+// Save is a convenience wrapper that calls Create then Finish in sequence.
+func Save(baseDir string, routine string, markdown string, rawResults map[string][]byte) (*Report, error) {
+	reportDir, err := Create(baseDir, routine, rawResults)
+	if err != nil {
+		return nil, err
+	}
+	return Finish(reportDir, routine, markdown)
 }
 
 // Load reads a report from a directory.
@@ -121,7 +147,7 @@ func List(baseDir string) ([]*Report, error) {
 		reports = append(reports, r)
 	}
 
-	// Sort by directory basename (includes THHMM timestamp) for minute-level ordering
+	// Sort by directory basename (includes THHMMSS timestamp) for second-level ordering
 	sort.Slice(reports, func(i, j int) bool {
 		return filepath.Base(reports[i].Dir) > filepath.Base(reports[j].Dir)
 	})
@@ -140,7 +166,7 @@ func FindLatest(baseDir string, routine string) (*Report, error) {
 		return nil, fmt.Errorf("listing reports: %w", err)
 	}
 
-	sanitized := sanitize(routine)
+	sanitized := slug.Sanitize(routine)
 	var candidates []string
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -158,19 +184,6 @@ func FindLatest(baseDir string, routine string) (*Report, error) {
 	// Directory names sort lexicographically by date; take the last one
 	sort.Strings(candidates)
 	return Load(filepath.Join(baseDir, candidates[len(candidates)-1]))
-}
-
-func sanitize(s string) string {
-	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, " ", "-")
-	// Remove anything that's not alphanumeric, dash, or underscore
-	var result strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			result.WriteRune(r)
-		}
-	}
-	return result.String()
 }
 
 // datePattern matches YYYY-MM-DD, YYYY-MM-DDTHHMM, or YYYY-MM-DDTHHMMSS at the start of a directory name.

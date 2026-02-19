@@ -60,6 +60,93 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestCreateThenFinish(t *testing.T) {
+	dir := t.TempDir()
+
+	rawResults := map[string][]byte{
+		"sam-gov-search": []byte(`{"results": []}`),
+	}
+
+	reportDir, err := Create(dir, "morning-intel", rawResults)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Raw results should exist on disk before Finish
+	dataDir := filepath.Join(reportDir, "data")
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatalf("ReadDir data: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 raw result file, got %d", len(entries))
+	}
+
+	// report.md should NOT exist yet
+	reportPath := filepath.Join(reportDir, "report.md")
+	if _, err := os.Stat(reportPath); !os.IsNotExist(err) {
+		t.Error("report.md should not exist before Finish")
+	}
+
+	// Now finish
+	report, err := Finish(reportDir, "morning-intel", "# Test Report\n")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if report.Markdown != "# Test Report\n" {
+		t.Error("markdown mismatch")
+	}
+	if report.Routine != "morning-intel" {
+		t.Errorf("expected routine morning-intel, got %q", report.Routine)
+	}
+	if len(report.Sources) != 1 {
+		t.Errorf("expected 1 source, got %d", len(report.Sources))
+	}
+
+	// report.md should now exist
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("reading report.md: %v", err)
+	}
+	if string(data) != "# Test Report\n" {
+		t.Error("on-disk report content mismatch")
+	}
+}
+
+func TestCreatePreservesDataOnSynthesisFailure(t *testing.T) {
+	dir := t.TempDir()
+
+	rawResults := map[string][]byte{
+		"api-data": []byte(`{"important": "data"}`),
+	}
+
+	reportDir, err := Create(dir, "test-routine", rawResults)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Simulate synthesis failure — never call Finish.
+	// Raw data must still be on disk.
+	dataDir := filepath.Join(reportDir, "data")
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatalf("ReadDir data: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 raw result file after failed synthesis, got %d", len(entries))
+	}
+
+	// Verify the actual content
+	data, err := os.ReadFile(filepath.Join(dataDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading raw result: %v", err)
+	}
+	if string(data) != `{"important": "data"}` {
+		t.Errorf("raw result content mismatch: %q", string(data))
+	}
+}
+
 func TestSaveNoRawResults(t *testing.T) {
 	dir := t.TempDir()
 
