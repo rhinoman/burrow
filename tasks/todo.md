@@ -219,3 +219,137 @@
 - [x] `go vet ./...` — clean
 - [x] `go test ./... -count=1` — all 14 packages pass
 - [x] `go test -race ./...` — no races detected
+
+---
+
+# Phase 5: Charts + Image Rendering
+
+## Implementation
+
+- [x] Step 1: `pkg/charts/charts.go` — directive parsing (ParseDirectives, ReplaceDirectives)
+- [x] Step 1: `pkg/charts/charts.go` — PNG rendering (RenderPNG: bar, line, pie via go-analyze/charts)
+- [x] Step 1: `pkg/charts/charts.go` — text table rendering (RenderTextTable: ASCII box-drawing tables)
+- [x] Step 1: `pkg/charts/charts_test.go` — 19 tests: parse, replace, render PNG, text tables, edge cases
+- [x] Step 2: `pkg/render/images.go` — terminal capability detection (DetectImageTier using rasterm)
+- [x] Step 2: `pkg/render/images.go` — inline image writing (WriteInlineImage: Kitty, iTerm2 protocols)
+- [x] Step 2: `pkg/render/images_test.go` — config override logic tests
+- [x] Step 3: `pkg/pipeline/executor.go` — chart PNG generation after synthesis when generate_charts=true
+- [x] Step 3: `pkg/reports/reports.go` — Charts field added to Report struct, charts/ dir scanning in Load/Finish
+- [x] Step 3: `pkg/pipeline/executor_test.go` + `pkg/reports/reports_test.go` — chart generation and loading tests
+- [x] Step 4: `pkg/render/chart_process.go` — chart processing for viewer (marker-based Glamour integration)
+- [x] Step 4: `pkg/render/viewer.go` — WithReportDir, WithImageConfig options; chart fields; i keybinding
+- [x] Step 4: `cmd/gd/cmd_reports.go` — passes report.Dir and rendering.images to viewer
+- [x] Step 5: `pkg/reports/export.go` — HTML export with chart embedding (base64 data URIs, HTML table fallback)
+- [x] Step 5: `pkg/reports/export_test.go` — chart embedding and fallback tests
+
+## New Files (4)
+
+- `pkg/charts/charts.go` — directive parsing, PNG rendering, text table rendering
+- `pkg/charts/charts_test.go` — 19 tests
+- `pkg/render/images.go` — terminal capability detection, inline image writing
+- `pkg/render/chart_process.go` — chart processing for viewer, openFirstChart
+
+## Modified Files (7+)
+
+- `pkg/pipeline/executor.go` — chart generation after synthesis
+- `pkg/pipeline/executor_test.go` — chart generation tests
+- `pkg/reports/reports.go` — Charts field, charts/ dir scanning
+- `pkg/reports/reports_test.go` — chart loading tests
+- `pkg/reports/export.go` — chart embedding in HTML export
+- `pkg/reports/export_test.go` — chart export tests
+- `pkg/render/viewer.go` — chart rendering options, keybindings
+- `cmd/gd/cmd_reports.go` — report dir and image config passthrough
+- `go.mod` / `go.sum` — added go-analyze/charts, rasterm
+
+## New Dependencies
+
+- `github.com/go-analyze/charts` v0.5.24 — pure Go chart library (bar/line/pie → PNG)
+- `github.com/BourgeoisBear/rasterm` v1.1.2 — Kitty/iTerm2/Sixel terminal image protocol support
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 15 packages pass
+- [x] `go test -race ./...` — no races detected
+
+---
+
+# Code Review Round 10 Fixes
+
+## Fixes
+
+- [x] **HIGH** Chart markers mangled by Glamour — changed `__BURROW_CHART_N__` to `BURROW-CHART-N` (underscores are CommonMark strong emphasis)
+- [x] **MED** Sixel detection without rendering — removed Sixel from `detectBest()` since `WriteInlineImage` can't render it yet
+- [x] **MED** Chart PNG write error discarded — added `fmt.Fprintf(os.Stderr, ...)` for `os.WriteFile` errors in executor chart generation
+- [x] **MED** Duplicate chart PNG loading — extracted `charts.LoadPNG(chartsDir, title, idx)`, removed `loadChartPNG` and `loadChartPNGForExport`
+- [x] **LOW** No tests for chart_process.go — added 6 tests including marker-mangling regression test
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 15 packages pass
+- [x] `go test -race ./...` — no races detected
+
+---
+
+# Phase 6: MCP Client + Result Caching + Automatic Report Comparison
+
+## Implementation
+
+- [x] Step 1: `pkg/mcp/client.go` — MCP JSON-RPC 2.0 client (Initialize, ListTools, CallTool)
+- [x] Step 1: `pkg/mcp/client.go` — Session ID tracking (Mcp-Session-Id header)
+- [x] Step 1: `pkg/mcp/client.go` — `NewHTTPClient()` with auth injection via RoundTripper
+- [x] Step 2: `pkg/mcp/service.go` — MCPService adapter (services.Service implementation)
+- [x] Step 2: `pkg/mcp/service.go` — Lazy init with sync.Once, tool discovery, param type conversion
+- [x] Step 3: `pkg/mcp/client_test.go` — 10 tests: init, session ID, list tools, call, error, timeout, HTTP error, auth
+- [x] Step 3: `pkg/mcp/service_test.go` — 5 tests: execute, discovery, error result, init memoized, name
+- [x] Step 4: `pkg/cache/cache.go` — CachedService decorator with SHA-256 keys, base64 JSON files
+- [x] Step 4: `pkg/cache/cache_test.go` — 8 tests: miss, hit, expired, error not cached, corrupted, JSON valid, different params, name
+- [x] Step 5: `cmd/gd/cmd_routines.go` — buildRegistry() handles MCP + cache wrapping
+- [x] Step 6: `pkg/pipeline/executor.go` — compare_with injection into synthesis prompt
+- [x] Step 6: `pkg/pipeline/executor_test.go` — 3 tests: compare with previous, no previous, no compare_with
+- [x] Step 7: `pkg/config/config.go` — MCP services skip tool path validation, llamacpp provider type
+- [x] Step 8: `integration_test.go` — MCP integration, caching integration, compare_with integration, config validation tests
+
+## New Files (6)
+
+- `pkg/mcp/client.go` — MCP JSON-RPC client + NewHTTPClient auth helper
+- `pkg/mcp/service.go` — MCPService adapter (implements services.Service)
+- `pkg/mcp/client_test.go` — 10 client tests with httptest mock
+- `pkg/mcp/service_test.go` — 5 service tests with httptest mock
+- `pkg/cache/cache.go` — CachedService decorator
+- `pkg/cache/cache_test.go` — 8 cache tests
+
+## Modified Files (5)
+
+- `cmd/gd/cmd_routines.go` — buildRegistry() handles MCP + cache wrapping
+- `pkg/pipeline/executor.go` — compare_with injection + buildComparisonContext()
+- `pkg/pipeline/executor_test.go` — 3 compare_with tests
+- `pkg/config/config.go` — MCP tool validation skip, llamacpp provider type
+- `integration_test.go` — 4 new integration tests (MCP, caching, compare_with, config validation)
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 17 packages pass
+- [x] `go test -race ./...` — no races detected
+- [x] All tests use httptest (zero network access)
+- [x] Cache files are valid JSON (inspectable with cat)
+- [x] MCP protocol messages match JSON-RPC 2.0 spec
+
+## Code Review Round 12 Fixes
+
+- [x] **MEDIUM** MCP Client sessionID data race — added `sync.Mutex` to `Client`, locked around read/write of `sessionID` in `call()`
+- [x] **MEDIUM** buildRegistry discards BurrowDir() error — changed signature to `buildRegistry(cfg, burrowDir)`, callers pass their already-validated burrowDir
+- [x] **LOW** buildComparisonContext byte-slices UTF-8 — changed to `[]rune` truncation, consistent with existing `extractSnippet` fix
+- [x] **LOW** Stale "Reserved: Phase 4" comment on CompareWith — updated to describe the implemented feature
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 17 packages pass
+- [x] `go test -race ./...` — no races detected

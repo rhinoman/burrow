@@ -2,6 +2,8 @@ package burrow_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	bcache "github.com/jcadam/burrow/pkg/cache"
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	bhttp "github.com/jcadam/burrow/pkg/http"
+	bmcp "github.com/jcadam/burrow/pkg/mcp"
 	"github.com/jcadam/burrow/pkg/pipeline"
 	"github.com/jcadam/burrow/pkg/privacy"
 	"github.com/jcadam/burrow/pkg/render"
@@ -421,5 +425,257 @@ func TestParallelExecution(t *testing.T) {
 	// Parallel should complete well under that. Use generous ceiling for CI.
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("expected parallel execution, took %v (should be < 500ms, sequential would be ≥300ms)", elapsed)
+	}
+}
+
+// TestMCPServiceIntegration exercises the MCP client → MCPService → registry path.
+func TestMCPServiceIntegration(t *testing.T) {
+	mcpCallCount := 0
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			JSONRPC string `json:"jsonrpc"`
+			ID      int64  `json:"id"`
+			Method  string `json:"method"`
+			Params  any    `json:"params"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", "integration-session")
+
+		switch req.Method {
+		case "initialize":
+			json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{
+					"protocolVersion": "2025-03-26",
+					"capabilities":    map[string]any{"tools": map[string]any{}},
+					"serverInfo":      map[string]any{"name": "integration-test", "version": "1.0"},
+				},
+			})
+		case "tools/list":
+			json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{
+					"tools": []map[string]any{
+						{"name": "analyze", "description": "Analyze documents"},
+					},
+				},
+			})
+		case "tools/call":
+			mcpCallCount++
+			json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": `{"analysis": "MCP integration test result", "score": 42}`},
+					},
+					"isError": false,
+				},
+			})
+		}
+	}))
+	defer mcpServer.Close()
+
+	burrowDir := t.TempDir()
+	reportsDir := filepath.Join(burrowDir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	// Build MCP service via the same path as buildRegistry().
+	svc := bmcp.NewMCPService("mcp-test", mcpServer.URL, &http.Client{Timeout: 5 * time.Second})
+	registry := services.NewRegistry()
+	if err := registry.Register(svc); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	synth := synthesis.NewPassthroughSynthesizer()
+	executor := pipeline.NewExecutor(registry, synth, reportsDir)
+
+	routine := &pipeline.Routine{
+		Name:   "mcp-integration",
+		Report: pipeline.ReportConfig{Title: "MCP Integration Report"},
+		Sources: []pipeline.SourceConfig{
+			{Service: "mcp-test", Tool: "analyze", Params: map[string]string{"doc": "test.pdf"}},
+		},
+	}
+
+	report, err := executor.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !strings.Contains(report.Markdown, "MCP integration test result") {
+		t.Error("expected MCP result data in report")
+	}
+	if mcpCallCount != 1 {
+		t.Errorf("expected 1 MCP tool call, got %d", mcpCallCount)
+	}
+}
+
+// TestCachingIntegration verifies that cache wrapping prevents duplicate API calls.
+func TestCachingIntegration(t *testing.T) {
+	apiCallCount := 0
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCallCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"cached_data": "important findings", "call": ` + fmt.Sprintf("%d", apiCallCount) + `}`))
+	}))
+	defer apiServer.Close()
+
+	burrowDir := t.TempDir()
+	reportsDir := filepath.Join(burrowDir, "reports")
+	cacheDir := filepath.Join(burrowDir, "cache")
+	os.MkdirAll(reportsDir, 0o755)
+
+	// Create REST service wrapped with cache.
+	inner := bhttp.NewRESTService(config.ServiceConfig{
+		Name:     "cached-api",
+		Type:     "rest",
+		Endpoint: apiServer.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{Name: "fetch", Method: "GET", Path: "/data"},
+		},
+	}, nil)
+	cached := bcache.NewCachedService(inner, cacheDir, 3600)
+
+	registry := services.NewRegistry()
+	registry.Register(cached)
+
+	synth := synthesis.NewPassthroughSynthesizer()
+
+	// First run — cache miss.
+	exec1 := pipeline.NewExecutor(registry, synth, reportsDir)
+	routine := &pipeline.Routine{
+		Name:   "cache-test",
+		Report: pipeline.ReportConfig{Title: "Cache Test"},
+		Sources: []pipeline.SourceConfig{
+			{Service: "cached-api", Tool: "fetch"},
+		},
+	}
+
+	report1, err := exec1.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	if !strings.Contains(report1.Markdown, "important findings") {
+		t.Error("expected data in first report")
+	}
+	if apiCallCount != 1 {
+		t.Errorf("expected 1 API call after first run, got %d", apiCallCount)
+	}
+
+	// Second run — cache hit. API should NOT be called again.
+	exec2 := pipeline.NewExecutor(registry, synth, reportsDir)
+	report2, err := exec2.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	if !strings.Contains(report2.Markdown, "important findings") {
+		t.Error("expected data in second report")
+	}
+	if apiCallCount != 1 {
+		t.Errorf("expected still 1 API call after second run (cached), got %d", apiCallCount)
+	}
+}
+
+// TestCompareWithIntegration exercises compare_with end-to-end.
+func TestCompareWithIntegration(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"new_data": "latest findings"}`))
+	}))
+	defer srv.Close()
+
+	burrowDir := t.TempDir()
+	reportsDir := filepath.Join(burrowDir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	// Seed a previous report for the "intel-daily" routine.
+	prevMarkdown := "# Previous Intel Report\n\nYesterday's key findings: Contract ABC awarded.\n"
+	_, err := reports.Save(reportsDir, "intel-daily", prevMarkdown, nil)
+	if err != nil {
+		t.Fatalf("seeding previous report: %v", err)
+	}
+
+	registry := services.NewRegistry()
+	svc := bhttp.NewRESTService(config.ServiceConfig{
+		Name:     "test-api",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools:    []config.ToolConfig{{Name: "fetch", Method: "GET", Path: "/data"}},
+	}, nil)
+	registry.Register(svc)
+
+	// Use a capturing synthesizer to verify the system prompt.
+	synth := &compareSynthesizer{}
+	executor := pipeline.NewExecutor(registry, synth, reportsDir)
+
+	routine := &pipeline.Routine{
+		Name: "today-intel",
+		Report: pipeline.ReportConfig{
+			Title:       "Today's Intel Report",
+			CompareWith: "intel-daily",
+		},
+		Synthesis: pipeline.SynthesisConfig{System: "You analyze intelligence."},
+		Sources: []pipeline.SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	_, err = executor.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !strings.Contains(synth.capturedSystem, "You analyze intelligence.") {
+		t.Error("expected original system prompt")
+	}
+	if !strings.Contains(synth.capturedSystem, "Previous Report for Comparison") {
+		t.Error("expected comparison header in system prompt")
+	}
+	if !strings.Contains(synth.capturedSystem, "Contract ABC awarded") {
+		t.Error("expected previous report content in system prompt")
+	}
+}
+
+// compareSynthesizer captures the system prompt for assertions.
+type compareSynthesizer struct {
+	capturedSystem string
+}
+
+func (c *compareSynthesizer) Synthesize(_ context.Context, title string, systemPrompt string, _ []*services.Result) (string, error) {
+	c.capturedSystem = systemPrompt
+	return "# " + title + "\n\nSynthesized report.\n", nil
+}
+
+// TestConfigValidateLlamaCpp verifies that llamacpp is accepted as a provider type.
+func TestConfigValidateLlamaCpp(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				{Name: "local-llama", Type: "llamacpp", Privacy: "local"},
+			},
+		},
+	}
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("llamacpp should be valid: %v", err)
+	}
+}
+
+// TestConfigValidateMCPNoTools verifies MCP services pass validation without tools.
+func TestConfigValidateMCPNoTools(t *testing.T) {
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "mcp-svc",
+				Type:     "mcp",
+				Endpoint: "http://localhost:8080/mcp",
+				Auth:     config.AuthConfig{Method: "bearer", Token: "secret"},
+			},
+		},
+	}
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("MCP service without tools should be valid: %v", err)
 	}
 }

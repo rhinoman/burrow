@@ -29,7 +29,7 @@ type ReportConfig struct {
 	Style          string `yaml:"style,omitempty"`
 	GenerateCharts bool   `yaml:"generate_charts,omitempty"`
 	MaxLength      int    `yaml:"max_length,omitempty"`
-	CompareWith    string `yaml:"compare_with,omitempty"` // Reserved: report comparison (Phase 4)
+	CompareWith    string `yaml:"compare_with,omitempty"` // Routine name to compare with for longitudinal analysis
 }
 
 // SynthesisConfig holds the LLM system prompt for synthesis.

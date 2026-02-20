@@ -385,6 +385,44 @@ func TestSearchNoResults(t *testing.T) {
 	}
 }
 
+func TestLoadWithCharts(t *testing.T) {
+	dir := t.TempDir()
+
+	reportDir := filepath.Join(dir, "2026-02-19T1400-chart-test")
+	os.MkdirAll(reportDir, 0o755)
+	os.WriteFile(filepath.Join(reportDir, "report.md"), []byte("# Chart Report\n"), 0o644)
+
+	// Create charts directory with some PNGs
+	chartsDir := filepath.Join(reportDir, "charts")
+	os.MkdirAll(chartsDir, 0o755)
+	os.WriteFile(filepath.Join(chartsDir, "postings-by-agency.png"), []byte("fake png"), 0o644)
+	os.WriteFile(filepath.Join(chartsDir, "trend-line.png"), []byte("fake png"), 0o644)
+
+	report, err := Load(reportDir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(report.Charts) != 2 {
+		t.Errorf("expected 2 charts, got %d", len(report.Charts))
+	}
+}
+
+func TestLoadWithNoCharts(t *testing.T) {
+	dir := t.TempDir()
+
+	reportDir := filepath.Join(dir, "2026-02-19T1400-no-charts")
+	os.MkdirAll(reportDir, 0o755)
+	os.WriteFile(filepath.Join(reportDir, "report.md"), []byte("# No Charts\n"), 0o644)
+
+	report, err := Load(reportDir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(report.Charts) != 0 {
+		t.Errorf("expected 0 charts, got %d", len(report.Charts))
+	}
+}
+
 func TestFindLatestFuzzy(t *testing.T) {
 	dir := t.TempDir()
 

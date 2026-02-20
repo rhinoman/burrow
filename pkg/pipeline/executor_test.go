@@ -11,6 +11,7 @@ import (
 	"time"
 
 	bcontext "github.com/jcadam/burrow/pkg/context"
+	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
 	"github.com/jcadam/burrow/pkg/synthesis"
 )
@@ -467,6 +468,244 @@ func TestTestSources(t *testing.T) {
 	}
 	if !strings.Contains(statuses[2].Error, "service not found") {
 		t.Errorf("expected service not found error, got: %s", statuses[2].Error)
+	}
+}
+
+// capturingSynthesizer records the system prompt it receives.
+type capturingSynthesizer struct {
+	systemPrompt string
+	results      []*services.Result
+}
+
+func (c *capturingSynthesizer) Synthesize(_ context.Context, title string, systemPrompt string, results []*services.Result) (string, error) {
+	c.systemPrompt = systemPrompt
+	c.results = results
+	return "# " + title + "\n\nSynthesized.\n", nil
+}
+
+func TestExecutorCompareWith(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	// Seed a previous report for the "compare-target" routine.
+	prevMarkdown := "# Previous Report\n\nOld findings here.\n"
+	_, err := reports.Save(reportsDir, "compare-target", prevMarkdown, nil)
+	if err != nil {
+		t.Fatalf("saving seed report: %v", err)
+	}
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "new"}`)})
+
+	synth := &capturingSynthesizer{}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "current-routine",
+		Report: ReportConfig{
+			Title:       "Current Report",
+			CompareWith: "compare-target",
+		},
+		Synthesis: SynthesisConfig{System: "You are an analyst."},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	_, err = exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// System prompt should contain comparison context.
+	if !strings.Contains(synth.systemPrompt, "Previous Report for Comparison") {
+		t.Error("expected comparison context in system prompt")
+	}
+	if !strings.Contains(synth.systemPrompt, "Old findings here.") {
+		t.Error("expected previous report content in system prompt")
+	}
+	if !strings.Contains(synth.systemPrompt, "You are an analyst.") {
+		t.Error("expected original system prompt preserved")
+	}
+}
+
+func TestExecutorCompareWithNoPrevious(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "value"}`)})
+
+	synth := &capturingSynthesizer{}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "first-run",
+		Report: ReportConfig{
+			Title:       "First Report",
+			CompareWith: "nonexistent-routine",
+		},
+		Synthesis: SynthesisConfig{System: "You are an analyst."},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	// Should succeed without error — no previous report is fine (first run).
+	_, err := exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// System prompt should NOT contain comparison context.
+	if strings.Contains(synth.systemPrompt, "Previous Report") {
+		t.Error("did not expect comparison context when no previous report exists")
+	}
+	if synth.systemPrompt != "You are an analyst." {
+		t.Errorf("expected unmodified system prompt, got %q", synth.systemPrompt)
+	}
+}
+
+func TestExecutorNoCompareWith(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "value"}`)})
+
+	synth := &capturingSynthesizer{}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name:      "no-compare",
+		Report:    ReportConfig{Title: "Normal Report"},
+		Synthesis: SynthesisConfig{System: "You are an analyst."},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	_, err := exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// System prompt should be unchanged.
+	if synth.systemPrompt != "You are an analyst." {
+		t.Errorf("expected unmodified system prompt, got %q", synth.systemPrompt)
+	}
+}
+
+// chartSynthesizer returns markdown with chart directives.
+type chartSynthesizer struct {
+	markdown string
+}
+
+func (c *chartSynthesizer) Synthesize(_ context.Context, _ string, _ string, _ []*services.Result) (string, error) {
+	return c.markdown, nil
+}
+
+func TestExecutorChartGeneration(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "value"}`)})
+
+	chartMD := "# Report\n\n```chart\ntype: bar\ntitle: \"Postings by Agency\"\nx: [\"NGA\", \"NRO\", \"DIA\"]\ny: [12, 4, 2]\n```\n\nSome text.\n"
+
+	synth := &chartSynthesizer{markdown: chartMD}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "chart-test",
+		Report: ReportConfig{
+			Title:          "Chart Report",
+			GenerateCharts: true,
+		},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	report, err := exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify charts directory was created with a PNG
+	chartsDir := filepath.Join(report.Dir, "charts")
+	entries, err := os.ReadDir(chartsDir)
+	if err != nil {
+		t.Fatalf("ReadDir charts: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 chart file, got %d", len(entries))
+	}
+	if !strings.HasSuffix(entries[0].Name(), ".png") {
+		t.Errorf("expected .png file, got %q", entries[0].Name())
+	}
+
+	// Verify the PNG file has valid content
+	pngData, err := os.ReadFile(filepath.Join(chartsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading PNG: %v", err)
+	}
+	if len(pngData) < 8 || string(pngData[1:4]) != "PNG" {
+		t.Error("expected valid PNG header")
+	}
+
+	// Verify report.md is unchanged (chart blocks preserved)
+	if !strings.Contains(report.Markdown, "```chart") {
+		t.Error("expected chart block preserved in markdown")
+	}
+
+	// Verify Charts field is populated
+	if len(report.Charts) != 1 {
+		t.Errorf("expected 1 chart in report, got %d", len(report.Charts))
+	}
+}
+
+func TestExecutorChartGenerationDisabled(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "value"}`)})
+
+	chartMD := "# Report\n\n```chart\ntype: bar\ntitle: \"Test\"\nx: [\"A\"]\ny: [1]\n```\n"
+
+	synth := &chartSynthesizer{markdown: chartMD}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "no-charts",
+		Report: ReportConfig{
+			Title:          "No Charts",
+			GenerateCharts: false,
+		},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	report, err := exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Charts directory should not exist
+	chartsDir := filepath.Join(report.Dir, "charts")
+	if _, err := os.Stat(chartsDir); !os.IsNotExist(err) {
+		t.Error("expected no charts directory when generate_charts is false")
+	}
+	if len(report.Charts) != 0 {
+		t.Errorf("expected 0 charts, got %d", len(report.Charts))
 	}
 }
 

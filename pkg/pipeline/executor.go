@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/jcadam/burrow/pkg/charts"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
+	"github.com/jcadam/burrow/pkg/slug"
 	"github.com/jcadam/burrow/pkg/synthesis"
 )
 
@@ -131,10 +134,52 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 		return nil, fmt.Errorf("saving raw results: %w", err)
 	}
 
+	// Inject comparison context if compare_with is set (spec §5.3).
+	synthesisSystem := routine.Synthesis.System
+	if routine.Report.CompareWith != "" {
+		prevReport, findErr := reports.FindLatest(e.reportsDir, routine.Report.CompareWith)
+		if findErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: compare_with %q: %v\n", routine.Report.CompareWith, findErr)
+		} else if prevReport != nil {
+			synthesisSystem = synthesisSystem + "\n\n" + buildComparisonContext(prevReport)
+		}
+		// If prevReport is nil (no previous report exists), skip silently — first run.
+	}
+
 	// Synthesize
-	markdown, err := e.synthesizer.Synthesize(ctx, routine.Report.Title, routine.Synthesis.System, results)
+	markdown, err := e.synthesizer.Synthesize(ctx, routine.Report.Title, synthesisSystem, results)
 	if err != nil {
 		return nil, fmt.Errorf("synthesis failed: %w", err)
+	}
+
+	// Generate chart PNGs if enabled
+	if routine.Report.GenerateCharts {
+		directives := charts.ParseDirectives(markdown)
+		if len(directives) > 0 {
+			chartsDir := filepath.Join(reportDir, "charts")
+			if mkErr := os.MkdirAll(chartsDir, 0o755); mkErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: creating charts dir: %v\n", mkErr)
+			} else {
+				for i, d := range directives {
+					w, h := 800, 400
+					if d.Type == "pie" {
+						w = 600
+					}
+					png, renderErr := charts.RenderPNG(d, w, h)
+					if renderErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: chart %q: %v\n", d.Title, renderErr)
+						continue
+					}
+					name := slug.Sanitize(d.Title)
+					if name == "chart" {
+						name = fmt.Sprintf("chart-%d", i)
+					}
+					if writeErr := os.WriteFile(filepath.Join(chartsDir, name+".png"), png, 0o644); writeErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: writing chart %q: %v\n", name, writeErr)
+					}
+				}
+			}
+		}
 	}
 
 	// Write synthesized report
@@ -229,4 +274,22 @@ func (e *Executor) indexContext(routine *Routine, report *reports.Report, result
 			fmt.Fprintf(os.Stderr, "warning: failed to index result %q in context: %v\n", label, err)
 		}
 	}
+}
+
+const maxCompareRunes = 50_000
+
+// buildComparisonContext formats a previous report for injection into the synthesis prompt.
+func buildComparisonContext(prev *reports.Report) string {
+	content := prev.Markdown
+	runes := []rune(content)
+	if len(runes) > maxCompareRunes {
+		content = string(runes[:maxCompareRunes]) + "\n\n[... truncated ...]\n"
+	}
+	return fmt.Sprintf(`## Previous Report for Comparison
+
+The following is the most recent report from %q (%s). Focus your analysis on what has CHANGED since this report — new items, updates, removals, and emerging trends. Do not simply repeat information from the previous report.
+
+---
+%s
+---`, prev.Routine, prev.Date, content)
 }

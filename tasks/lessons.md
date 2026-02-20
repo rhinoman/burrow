@@ -133,3 +133,33 @@
 - LLM proposes configs; user may reject them
 - Only return configs that the user explicitly accepted ("y" to apply)
 - When user types "done" with no applied config, fall through to wizard (return nil, nil)
+
+## Markers injected into markdown must avoid special characters
+- CommonMark treats `__text__` as strong emphasis — `__BURROW_CHART_0__` becomes `**BURROW_****CHART_****0**`
+- When injecting markers into markdown that will be rendered, use characters that are inert in CommonMark (hyphens, alphanumeric only)
+- Fixed: changed from `__BURROW_CHART_N__` to `BURROW-CHART-N`
+- Always test marker survival through the full rendering pipeline, not just string replacement
+
+## Don't detect capabilities you can't use
+- `DetectImageTier` detected Sixel terminals but `WriteInlineImage` returned nil for them
+- Users with Sixel-capable terminals got silent text fallback with no explanation
+- Either implement the capability or don't detect it — don't create false expectations
+- When deferring implementation, add a comment explaining what's needed (e.g., "Sixel requires image.Paletted, not raw PNG")
+
+## Don't duplicate utility functions across packages (revisited)
+- `chart_process.go:loadChartPNG` and `export.go:loadChartPNGForExport` contained identical slug-based PNG loading logic
+- Consolidated into `charts.LoadPNG(chartsDir, title, idx)` — single function, both callers import it
+- This is the same pattern as the `slug.Sanitize` consolidation from Phase 2
+
+## Protect shared mutable state in protocol clients
+- `Client.sessionID` (MCP) was a plain string read/written in `call()` without synchronization
+- `nextID` correctly used `atomic.Int64`, but `sessionID` was missed
+- The pipeline executor runs sources in parallel — two sources using the same MCP service race on `sessionID`
+- Fix: `sync.Mutex` around read and write of `sessionID` in `call()`
+- Rule: any mutable state on a struct that may be called concurrently needs explicit protection
+
+## Don't discard errors from functions that return paths
+- `config.BurrowDir()` returns `("", error)` on failure
+- Discarding the error with `_` silently produces a relative path ("cache" instead of "~/.burrow/cache")
+- This violates the "All file I/O under ~/.burrow/" invariant
+- Fix: accept the path as a parameter from callers that already have it, or propagate the error

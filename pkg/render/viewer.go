@@ -76,6 +76,12 @@ type Viewer struct {
 	ledger   *bcontext.Ledger
 	ctx      context.Context
 
+	// Chart rendering
+	reportDir   string    // report directory for locating chart PNGs
+	imageConfig string    // rendering.images config value
+	imageTier   ImageTier // detected terminal image capability
+	hasCharts   bool      // whether content contains charts
+
 	statusMsg string
 	statusExp time.Time
 }
@@ -101,6 +107,16 @@ func WithLedger(l *bcontext.Ledger) ViewerOption {
 // WithContext provides a cancellable context for async operations.
 func WithContext(ctx context.Context) ViewerOption {
 	return func(v *Viewer) { v.ctx = ctx }
+}
+
+// WithReportDir provides the report directory for locating chart PNGs.
+func WithReportDir(dir string) ViewerOption {
+	return func(v *Viewer) { v.reportDir = dir }
+}
+
+// WithImageConfig provides the rendering.images config value.
+func WithImageConfig(images string) ViewerOption {
+	return func(v *Viewer) { v.imageConfig = images }
 }
 
 // NewViewer creates a viewer with pre-rendered content.
@@ -202,6 +218,8 @@ func (v Viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.startDraftAction()
 		case "o":
 			return v.startOpenAction()
+		case "i":
+			return v.openFirstChart()
 		}
 	}
 
@@ -235,6 +253,9 @@ func (v Viewer) View() string {
 		if len(v.actions) > 0 {
 			hints += " │ a actions"
 		}
+		if v.hasCharts && v.handoff != nil {
+			hints += " │ i open chart"
+		}
 		hints += " │ q quit"
 
 		footer = footerStyle.Render(fmt.Sprintf(hints+status, v.viewport.ScrollPercent()*100))
@@ -254,6 +275,12 @@ func RunViewer(title string, markdown string, opts ...ViewerOption) error {
 	for _, opt := range opts {
 		opt(&v)
 	}
+
+	// Process charts after options are applied (need reportDir and imageConfig)
+	v.imageTier = DetectImageTier(v.imageConfig)
+	v.content = processCharts(v.raw, v.content, v.reportDir, v.imageTier)
+	v.hasCharts = hasChartDirectives(v.raw)
+
 	p := tea.NewProgram(v, tea.WithAltScreen())
 
 	_, err = p.Run()

@@ -247,8 +247,11 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// Validate tool paths
+	// Validate tool paths (REST services only — MCP tools are discovered from server).
 	for _, svc := range cfg.Services {
+		if svc.Type != "rest" {
+			continue
+		}
 		for _, tool := range svc.Tools {
 			if tool.Path != "" && !strings.HasPrefix(tool.Path, "/") {
 				return fmt.Errorf("service %q tool %q has relative path %q (must start with /)", svc.Name, tool.Name, tool.Path)
@@ -268,7 +271,7 @@ func Validate(cfg *Config) error {
 		provNames[prov.Name] = true
 
 		switch prov.Type {
-		case "ollama", "openrouter", "passthrough", "":
+		case "ollama", "openrouter", "llamacpp", "passthrough", "":
 			// valid
 		default:
 			return fmt.Errorf("LLM provider %q has unknown type %q", prov.Name, prov.Type)

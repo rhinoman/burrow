@@ -21,6 +21,7 @@ type Report struct {
 	Date     string   // YYYY-MM-DD
 	Markdown string   // report content
 	Sources  []string // list of source files in data/
+	Charts   []string // list of chart files in charts/
 }
 
 // Create writes raw results to disk under baseDir/YYYY-MM-DDT150405-routine-name/data/.
@@ -71,12 +72,21 @@ func Finish(reportDir string, routine string, markdown string) (*Report, error) 
 		}
 	}
 
+	var charts []string
+	chartsDir := filepath.Join(reportDir, "charts")
+	if entries, err := os.ReadDir(chartsDir); err == nil {
+		for _, e := range entries {
+			charts = append(charts, filepath.Join(chartsDir, e.Name()))
+		}
+	}
+
 	return &Report{
 		Dir:      reportDir,
 		Routine:  routine,
 		Date:     date,
 		Markdown: markdown,
 		Sources:  sources,
+		Charts:   charts,
 	}, nil
 }
 
@@ -108,6 +118,14 @@ func Load(reportDir string) (*Report, error) {
 		}
 	}
 
+	var charts []string
+	chartsDir := filepath.Join(reportDir, "charts")
+	if entries, err := os.ReadDir(chartsDir); err == nil {
+		for _, e := range entries {
+			charts = append(charts, filepath.Join(chartsDir, e.Name()))
+		}
+	}
+
 	// Extract title from first markdown heading
 	title := extractTitle(string(data))
 
@@ -118,6 +136,7 @@ func Load(reportDir string) (*Report, error) {
 		Date:     date,
 		Markdown: string(data),
 		Sources:  sources,
+		Charts:   charts,
 	}, nil
 }
 

@@ -44,7 +44,7 @@ func runInteractive(ctx context.Context) error {
 	config.ResolveEnvVars(cfg)
 
 	// Build registry
-	registry, err := buildRegistry(cfg)
+	registry, err := buildRegistry(cfg, burrowDir)
 	if err != nil {
 		return fmt.Errorf("building service registry: %w", err)
 	}

@@ -87,6 +87,10 @@ var reportsViewCmd = &cobra.Command{
 
 		cfg, _ := loadConfigQuiet(burrowDir)
 		opts := viewerOptions(cfg)
+		opts = append(opts, render.WithReportDir(report.Dir))
+		if cfg != nil {
+			opts = append(opts, render.WithImageConfig(cfg.Rendering.Images))
+		}
 		return render.RunViewer(title, report.Markdown, opts...)
 	},
 }
@@ -161,7 +165,7 @@ var reportsExportCmd = &cobra.Command{
 			fmt.Printf("Exported: %s\n", outName)
 
 		case "html":
-			html, err := reports.ExportHTML(report.Markdown, title)
+			html, err := reports.ExportHTML(report.Markdown, title, report.Dir)
 			if err != nil {
 				return fmt.Errorf("exporting HTML: %w", err)
 			}

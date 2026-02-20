@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jcadam/burrow/pkg/cache"
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	bhttp "github.com/jcadam/burrow/pkg/http"
+	"github.com/jcadam/burrow/pkg/mcp"
 	"github.com/jcadam/burrow/pkg/pipeline"
 	"github.com/jcadam/burrow/pkg/privacy"
 	"github.com/jcadam/burrow/pkg/reports"
@@ -99,7 +101,7 @@ var routinesRunCmd = &cobra.Command{
 		}
 
 		// Build service registry
-		registry, err := buildRegistry(cfg)
+		registry, err := buildRegistry(cfg, burrowDir)
 		if err != nil {
 			return err
 		}
@@ -212,7 +214,7 @@ var routinesTestCmd = &cobra.Command{
 			return fmt.Errorf("loading routine: %w", err)
 		}
 
-		registry, err := buildRegistry(cfg)
+		registry, err := buildRegistry(cfg, burrowDir)
 		if err != nil {
 			return err
 		}
@@ -251,8 +253,9 @@ var routinesTestCmd = &cobra.Command{
 	},
 }
 
-// buildRegistry creates a service registry from config, wiring privacy transport.
-func buildRegistry(cfg *config.Config) (*services.Registry, error) {
+// buildRegistry creates a service registry from config, wiring privacy transport,
+// MCP clients, and result caching. burrowDir is used for cache storage.
+func buildRegistry(cfg *config.Config, burrowDir string) (*services.Registry, error) {
 	var privCfg *privacy.Config
 	if cfg.Privacy.StripReferrers || cfg.Privacy.RandomizeUserAgent || cfg.Privacy.MinimizeRequests {
 		privCfg = &privacy.Config{
@@ -262,12 +265,28 @@ func buildRegistry(cfg *config.Config) (*services.Registry, error) {
 		}
 	}
 
+	cacheDir := filepath.Join(burrowDir, "cache")
+
 	registry := services.NewRegistry()
 	for _, svcCfg := range cfg.Services {
-		if svcCfg.Type != "rest" {
-			continue // MCP not implemented yet
+		var svc services.Service
+
+		switch svcCfg.Type {
+		case "rest":
+			svc = bhttp.NewRESTService(svcCfg, privCfg)
+		case "mcp":
+			httpClient := mcp.NewHTTPClient(svcCfg.Auth, privCfg)
+			svc = mcp.NewMCPService(svcCfg.Name, svcCfg.Endpoint, httpClient)
+		default:
+			fmt.Fprintf(os.Stderr, "warning: unknown service type %q for %q, skipping\n", svcCfg.Type, svcCfg.Name)
+			continue
 		}
-		svc := bhttp.NewRESTService(svcCfg, privCfg)
+
+		// Wrap with cache if TTL > 0.
+		if svcCfg.CacheTTL > 0 {
+			svc = cache.NewCachedService(svc, cacheDir, svcCfg.CacheTTL)
+		}
+
 		if err := registry.Register(svc); err != nil {
 			return nil, fmt.Errorf("registering service: %w", err)
 		}
