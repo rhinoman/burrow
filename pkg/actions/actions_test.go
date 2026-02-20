@@ -93,6 +93,36 @@ func TestParseActionsMultiple(t *testing.T) {
 	}
 }
 
+func TestParseActionsPlay(t *testing.T) {
+	md := "- [Play] Listen to earnings call (/tmp/earnings.mp3)\n"
+	actions := ParseActions(md)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Type != ActionPlay {
+		t.Errorf("expected ActionPlay, got %v", actions[0].Type)
+	}
+	if actions[0].Target != "/tmp/earnings.mp3" {
+		t.Errorf("unexpected target: %q", actions[0].Target)
+	}
+	if actions[0].Description != "Listen to earnings call" {
+		t.Errorf("unexpected description: %q", actions[0].Description)
+	}
+}
+
+func TestParseActionsPlayCaseInsensitive(t *testing.T) {
+	md := "- [PLAY] Audio file (/tmp/audio.wav)\n- [play] Video (/tmp/video.mp4)\n"
+	actions := ParseActions(md)
+	if len(actions) != 2 {
+		t.Fatalf("expected 2 actions, got %d", len(actions))
+	}
+	for _, a := range actions {
+		if a.Type != ActionPlay {
+			t.Errorf("expected ActionPlay, got %v", a.Type)
+		}
+	}
+}
+
 func TestParseDraftStructured(t *testing.T) {
 	raw := "To: vendor@example.com\nSubject: Follow-up on proposal\n\nDear Vendor,\n\nThank you for the proposal.\n\nBest regards"
 	d := parseDraft(raw)

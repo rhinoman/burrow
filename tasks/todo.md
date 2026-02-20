@@ -503,3 +503,39 @@ No existing files modified. Cobra subcommands register via `init()` in their own
 - [x] `go vet ./...` — clean
 - [x] `go test ./... -count=1` — all 19 packages pass
 - [x] `go test -race ./...` — no races
+
+---
+
+# Phase 12: Expandable Sections & Media Playback
+
+## Implementation
+
+- [x] Part A: `pkg/actions/actions.go` — Added `ActionPlay` const, parse `[Play]` marker
+- [x] Part A: `pkg/actions/actions_test.go` — 2 new tests: play parsing, play case-insensitive
+- [x] Part B: `pkg/render/viewer.go` — Extended `headingPos` with level/viewLine/endLine/collapsed fields
+- [x] Part B: `pkg/render/viewer.go` — Added `fullLines` to Viewer for stable original content
+- [x] Part B: `pkg/render/viewer.go` — Updated `extractHeadings` to capture heading level, `computeEndLines` for section boundaries
+- [x] Part B: `pkg/render/viewer.go` — `rebuildContent()` builds visible content from fullLines + collapse state
+- [x] Part B: `pkg/render/viewer.go` — `insertAfterANSIPrefix`/`prependIndicator` for ANSI-safe fold indicators
+- [x] Part B: `pkg/render/viewer.go` — `toggleSection`, `collapseAll`, `expandAll`, `currentHeadingIdx`
+- [x] Part B: `pkg/render/viewer.go` — Keybindings: Enter/Tab toggle, c collapse all, e expand all, p play
+- [x] Part B: `pkg/render/viewer.go` — Updated n/N navigation to use viewLine
+- [x] Part B: `pkg/render/viewer.go` — Footer hints updated
+- [x] Part B: `pkg/render/viewer.go` — Wired ActionPlay: startPlayAction, startPlayActionFor
+- [x] Tests: `pkg/render/viewer_test.go` — 13 new tests
+
+## Modified Files (4)
+
+| File | Changes |
+|------|---------|
+| `pkg/actions/actions.go` | Added `ActionPlay` const, `[play]` parsing case |
+| `pkg/actions/actions_test.go` | 2 new tests |
+| `pkg/render/viewer.go` | Expandable sections + play action wiring |
+| `pkg/render/viewer_test.go` | 13 new tests |
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 19 packages pass
+- [x] `go test -race ./...` — no races detected

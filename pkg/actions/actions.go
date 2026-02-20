@@ -13,6 +13,7 @@ const (
 	ActionDraft     ActionType = "draft"
 	ActionOpen      ActionType = "open"
 	ActionConfigure ActionType = "configure"
+	ActionPlay      ActionType = "play"
 )
 
 // Action represents a suggested action parsed from a report.
@@ -46,6 +47,9 @@ func ParseActions(markdown string) []Action {
 		case strings.Contains(lower, "[configure]"):
 			actionType = ActionConfigure
 			marker = "[configure]"
+		case strings.Contains(lower, "[play]"):
+			actionType = ActionPlay
+			marker = "[play]"
 		default:
 			continue
 		}
