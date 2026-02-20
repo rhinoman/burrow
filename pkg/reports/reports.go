@@ -186,6 +186,54 @@ func FindLatest(baseDir string, routine string) (*Report, error) {
 	return Load(filepath.Join(baseDir, candidates[len(candidates)-1]))
 }
 
+// Search returns reports whose markdown matches query (case-insensitive substring).
+// Results are sorted newest first.
+func Search(baseDir string, query string) ([]*Report, error) {
+	all, err := List(baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	query = strings.ToLower(query)
+	var matches []*Report
+	for _, r := range all {
+		if strings.Contains(strings.ToLower(r.Markdown), query) {
+			matches = append(matches, r)
+		}
+	}
+	return matches, nil
+}
+
+// FindLatestFuzzy returns the most recent report for any routine whose
+// sanitized name contains the given substring (case-insensitive).
+func FindLatestFuzzy(baseDir string, substring string) (*Report, error) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing reports: %w", err)
+	}
+
+	substring = strings.ToLower(substring)
+	var candidates []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		_, name := parseReportDirName(e.Name())
+		if strings.Contains(strings.ToLower(name), substring) {
+			candidates = append(candidates, e.Name())
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	sort.Strings(candidates)
+	return Load(filepath.Join(baseDir, candidates[len(candidates)-1]))
+}
+
 // datePattern matches YYYY-MM-DD, YYYY-MM-DDTHHMM, or YYYY-MM-DDTHHMMSS at the start of a directory name.
 var datePattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})(T\d{4,6})?-(.+)$`)
 

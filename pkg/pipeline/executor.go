@@ -151,6 +151,51 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 	return report, nil
 }
 
+// SourceStatus holds the result of testing a single source's connectivity.
+type SourceStatus struct {
+	Service string
+	Tool    string
+	OK      bool
+	Error   string
+	Latency time.Duration
+}
+
+// TestSources checks connectivity for each source in a routine.
+// Sources are tested sequentially with no jitter, synthesis, or persistence.
+func (e *Executor) TestSources(ctx context.Context, routine *Routine) []SourceStatus {
+	statuses := make([]SourceStatus, len(routine.Sources))
+
+	for i, src := range routine.Sources {
+		status := SourceStatus{
+			Service: src.Service,
+			Tool:    src.Tool,
+		}
+
+		svc, err := e.registry.Get(src.Service)
+		if err != nil {
+			status.Error = fmt.Sprintf("service not found: %v", err)
+			statuses[i] = status
+			continue
+		}
+
+		start := time.Now()
+		result, err := svc.Execute(ctx, src.Tool, src.Params)
+		status.Latency = time.Since(start)
+
+		if err != nil {
+			status.Error = err.Error()
+		} else if result.Error != "" {
+			status.Error = result.Error
+		} else {
+			status.OK = true
+		}
+
+		statuses[i] = status
+	}
+
+	return statuses
+}
+
 // indexContext writes report and raw results to the context ledger.
 func (e *Executor) indexContext(routine *Routine, report *reports.Report, results []*services.Result) {
 	now := time.Now().UTC()

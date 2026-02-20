@@ -250,6 +250,64 @@ func TestParseEntryMissingClosingFrontMatter(t *testing.T) {
 	}
 }
 
+func TestStats(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	// Empty ledger
+	stats, err := l.Stats()
+	if err != nil {
+		t.Fatalf("Stats (empty): %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected empty stats, got %d types", len(stats))
+	}
+
+	ts1 := time.Date(2026, 2, 17, 5, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 2, 19, 8, 0, 0, 0, time.UTC)
+
+	l.Append(Entry{Type: TypeReport, Label: "Report A", Timestamp: ts1, Content: "content a"})
+	l.Append(Entry{Type: TypeReport, Label: "Report B", Timestamp: ts2, Content: "content b"})
+	l.Append(Entry{Type: TypeResult, Label: "Result A", Timestamp: ts1, Content: "result content"})
+
+	stats, err = l.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+
+	if len(stats) != 2 {
+		t.Fatalf("expected 2 types, got %d", len(stats))
+	}
+
+	rs, ok := stats[TypeReport]
+	if !ok {
+		t.Fatal("expected report stats")
+	}
+	if rs.Count != 2 {
+		t.Errorf("expected 2 reports, got %d", rs.Count)
+	}
+	if !rs.Earliest.Equal(ts1) {
+		t.Errorf("expected earliest %v, got %v", ts1, rs.Earliest)
+	}
+	if !rs.Latest.Equal(ts2) {
+		t.Errorf("expected latest %v, got %v", ts2, rs.Latest)
+	}
+	if rs.Bytes <= 0 {
+		t.Error("expected positive byte count")
+	}
+
+	res, ok := stats[TypeResult]
+	if !ok {
+		t.Fatal("expected result stats")
+	}
+	if res.Count != 1 {
+		t.Errorf("expected 1 result, got %d", res.Count)
+	}
+}
+
 func TestDirectoryStructure(t *testing.T) {
 	dir := t.TempDir()
 	_, err := NewLedger(dir)

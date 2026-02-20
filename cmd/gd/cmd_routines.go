@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	bhttp "github.com/jcadam/burrow/pkg/http"
 	"github.com/jcadam/burrow/pkg/pipeline"
 	"github.com/jcadam/burrow/pkg/privacy"
+	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
 	"github.com/jcadam/burrow/pkg/synthesis"
 	"github.com/spf13/cobra"
@@ -19,6 +21,8 @@ func init() {
 	rootCmd.AddCommand(routinesCmd)
 	routinesCmd.AddCommand(routinesListCmd)
 	routinesCmd.AddCommand(routinesRunCmd)
+	routinesCmd.AddCommand(routinesHistoryCmd)
+	routinesCmd.AddCommand(routinesTestCmd)
 }
 
 var routinesCmd = &cobra.Command{
@@ -126,6 +130,123 @@ var routinesRunCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Report generated: %s\n", report.Dir)
+		return nil
+	},
+}
+
+var routinesHistoryCmd = &cobra.Command{
+	Use:   "history <name>",
+	Short: "Show report history for a routine",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		routineName := args[0]
+
+		burrowDir, err := config.BurrowDir()
+		if err != nil {
+			return err
+		}
+		reportsDir := filepath.Join(burrowDir, "reports")
+
+		all, err := reports.List(reportsDir)
+		if err != nil {
+			return fmt.Errorf("listing reports: %w", err)
+		}
+
+		var matching []*reports.Report
+		for _, r := range all {
+			if r.Routine == routineName {
+				matching = append(matching, r)
+			}
+		}
+
+		if len(matching) == 0 {
+			fmt.Printf("No reports found for routine %q\n", routineName)
+			return nil
+		}
+
+		fmt.Printf("Report history for %q (%d reports):\n\n", routineName, len(matching))
+		for _, r := range matching {
+			title := r.Title
+			if title == "" {
+				title = "(untitled)"
+			}
+			fmt.Printf("  %s  %s  (%d sources)\n", r.Date, title, len(r.Sources))
+		}
+		return nil
+	},
+}
+
+var routinesTestCmd = &cobra.Command{
+	Use:   "test <name>",
+	Short: "Test a routine's source connectivity (dry run)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		routineName := args[0]
+
+		burrowDir, err := config.BurrowDir()
+		if err != nil {
+			return err
+		}
+
+		cfg, err := config.Load(burrowDir)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+		config.ResolveEnvVars(cfg)
+		if err := config.Validate(cfg); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
+
+		// Load routine
+		routinesDir := filepath.Join(burrowDir, "routines")
+		routinePath := filepath.Join(routinesDir, routineName+".yaml")
+		if _, err := os.Stat(routinePath); os.IsNotExist(err) {
+			ymlPath := filepath.Join(routinesDir, routineName+".yml")
+			if _, err := os.Stat(ymlPath); os.IsNotExist(err) {
+				return fmt.Errorf("routine %q not found", routineName)
+			}
+			routinePath = ymlPath
+		}
+		routine, err := pipeline.LoadRoutine(routinePath)
+		if err != nil {
+			return fmt.Errorf("loading routine: %w", err)
+		}
+
+		registry, err := buildRegistry(cfg)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Testing %d source(s) for routine %q...\n\n", len(routine.Sources), routineName)
+
+		synth := synthesis.NewPassthroughSynthesizer()
+		reportsDir := filepath.Join(burrowDir, "reports")
+		executor := pipeline.NewExecutor(registry, synth, reportsDir)
+
+		statuses := executor.TestSources(cmd.Context(), routine)
+
+		allOK := true
+		for _, s := range statuses {
+			status := "OK"
+			if !s.OK {
+				status = "FAIL"
+				allOK = false
+			}
+			fmt.Printf("  %-4s  %s / %s", status, s.Service, s.Tool)
+			if s.OK {
+				fmt.Printf("  (%s)", s.Latency.Round(time.Millisecond))
+			} else {
+				fmt.Printf("  — %s", s.Error)
+			}
+			fmt.Println()
+		}
+
+		fmt.Println()
+		if allOK {
+			fmt.Println("All sources OK.")
+		} else {
+			fmt.Println("Some sources failed. Check configuration and credentials.")
+		}
 		return nil
 	},
 }

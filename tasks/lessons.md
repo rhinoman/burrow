@@ -106,6 +106,29 @@
 - This is the correct implementation of compartmentalization — combined context only stays local
 - Document the intent with a comment, not just the behavior
 
+## Bubble Tea: never block in Update
+- Synchronous network calls (LLM, HTTP) in `Update` freeze the entire TUI
+- Return a `tea.Cmd` (closure) that runs async and produces a `tea.Msg`
+- Handle the result in `Update` via a custom message type
+- Use a `busy` flag to show progress and block conflicting keybindings
+- Pass a cancellable context (not `context.Background()`) so quit can abort in-flight work
+
+## Byte slicing vs rune slicing
+- `text[start:end]` with byte offsets can split multi-byte UTF-8 characters
+- Reports may contain accented names, CJK text, emoji
+- Use `[]rune` conversion when doing character-count-based truncation or substring extraction
+- `strings.Index` returns byte offsets — convert to rune offset before rune-slicing
+
+## Commands that filter by type should default to "all"
+- A `gd context show` that only shows session entries surprises users
+- Default to showing all types, with a `--type` filter flag for narrowing
+- Apply the same principle to any list/search command with multiple categories
+
+## Size-limit LLM inputs
+- Two full reports concatenated can easily exceed a provider's context window
+- Truncate and warn when combined input exceeds a threshold (e.g., 50KB)
+- Same principle applies to `gd ask` context gathering — already has maxBytes param
+
 ## Conversational init must track applied vs proposed state
 - LLM proposes configs; user may reject them
 - Only return configs that the user explicitly accepted ("y" to apply)

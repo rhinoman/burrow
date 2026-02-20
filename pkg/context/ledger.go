@@ -198,6 +198,80 @@ func (l *Ledger) GatherContext(maxBytes int) (string, error) {
 	return b.String(), nil
 }
 
+// TypeStats holds aggregate statistics for one entry type.
+type TypeStats struct {
+	Count    int
+	Bytes    int64
+	Earliest time.Time
+	Latest   time.Time
+}
+
+// Stats returns aggregate statistics for each entry type in the ledger.
+func (l *Ledger) Stats() (map[string]TypeStats, error) {
+	stats := make(map[string]TypeStats)
+
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s"} {
+		entryType := strings.TrimSuffix(sub, "s")
+		dir := filepath.Join(l.root, sub)
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+
+		var ts TypeStats
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
+				continue
+			}
+			info, err := f.Info()
+			if err != nil {
+				continue
+			}
+			ts.Count++
+			ts.Bytes += info.Size()
+
+			// Read only the front matter (first ~512 bytes) to extract timestamp.
+			header, err := readHead(filepath.Join(dir, f.Name()), 512)
+			if err != nil {
+				continue
+			}
+			entry := parseEntry(header, f.Name(), sub)
+			if !entry.Timestamp.IsZero() {
+				if ts.Earliest.IsZero() || entry.Timestamp.Before(ts.Earliest) {
+					ts.Earliest = entry.Timestamp
+				}
+				if ts.Latest.IsZero() || entry.Timestamp.After(ts.Latest) {
+					ts.Latest = entry.Timestamp
+				}
+			}
+		}
+
+		if ts.Count > 0 {
+			stats[entryType] = ts
+		}
+	}
+
+	return stats, nil
+}
+
+// readHead reads up to n bytes from the beginning of a file.
+func readHead(path string, n int) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	buf := make([]byte, n)
+	read, err := f.Read(buf)
+	if err != nil && read == 0 {
+		return "", err
+	}
+	return string(buf[:read]), nil
+}
+
 // parseEntry extracts an Entry from raw file content and filename.
 func parseEntry(raw, filename, subdir string) Entry {
 	e := Entry{

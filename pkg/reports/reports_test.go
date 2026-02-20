@@ -323,3 +323,110 @@ func TestFindLatestMissing(t *testing.T) {
 		t.Error("expected nil for missing routine")
 	}
 }
+
+func TestSearch(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"2026-02-17T0800-alpha", "# Alpha\n\nContains keyword geospatial.\n"},
+		{"2026-02-18T0900-beta", "# Beta\n\nNo matching content here.\n"},
+		{"2026-02-19T0500-gamma", "# Gamma\n\nAlso geospatial analysis.\n"},
+	} {
+		reportDir := filepath.Join(dir, tc.name)
+		os.MkdirAll(reportDir, 0o755)
+		os.WriteFile(filepath.Join(reportDir, "report.md"), []byte(tc.content), 0o644)
+	}
+
+	results, err := Search(dir, "geospatial")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 search results, got %d", len(results))
+	}
+	// Should be newest first
+	if results[0].Date != "2026-02-19" {
+		t.Errorf("expected newest first, got %q", results[0].Date)
+	}
+}
+
+func TestSearchCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+
+	reportDir := filepath.Join(dir, "2026-02-19T0500-test")
+	os.MkdirAll(reportDir, 0o755)
+	os.WriteFile(filepath.Join(reportDir, "report.md"), []byte("# UPPERCASE Content\n"), 0o644)
+
+	results, err := Search(dir, "uppercase")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for case-insensitive search, got %d", len(results))
+	}
+}
+
+func TestSearchNoResults(t *testing.T) {
+	dir := t.TempDir()
+
+	reportDir := filepath.Join(dir, "2026-02-19T0500-test")
+	os.MkdirAll(reportDir, 0o755)
+	os.WriteFile(filepath.Join(reportDir, "report.md"), []byte("# Some report\n"), 0o644)
+
+	results, err := Search(dir, "nonexistent")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestFindLatestFuzzy(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, name := range []string{"2026-02-17T0800-morning-intel", "2026-02-19T0500-morning-intel", "2026-02-18T0900-afternoon-brief"} {
+		reportDir := filepath.Join(dir, name)
+		os.MkdirAll(reportDir, 0o755)
+		os.WriteFile(filepath.Join(reportDir, "report.md"), []byte("# Report\n"), 0o644)
+	}
+
+	// "morning" should match "morning-intel"
+	report, err := FindLatestFuzzy(dir, "morning")
+	if err != nil {
+		t.Fatalf("FindLatestFuzzy: %v", err)
+	}
+	if report == nil {
+		t.Fatal("expected to find a report")
+	}
+	if report.Date != "2026-02-19" {
+		t.Errorf("expected latest date 2026-02-19, got %q", report.Date)
+	}
+	if report.Routine != "morning-intel" {
+		t.Errorf("expected routine morning-intel, got %q", report.Routine)
+	}
+
+	// "brief" should match "afternoon-brief"
+	report, err = FindLatestFuzzy(dir, "brief")
+	if err != nil {
+		t.Fatalf("FindLatestFuzzy: %v", err)
+	}
+	if report == nil {
+		t.Fatal("expected to find a report")
+	}
+	if report.Routine != "afternoon-brief" {
+		t.Errorf("expected routine afternoon-brief, got %q", report.Routine)
+	}
+
+	// No match
+	report, err = FindLatestFuzzy(dir, "nonexistent")
+	if err != nil {
+		t.Fatalf("FindLatestFuzzy: %v", err)
+	}
+	if report != nil {
+		t.Error("expected nil for no match")
+	}
+}

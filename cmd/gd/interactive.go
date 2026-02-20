@@ -13,6 +13,7 @@ import (
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	"github.com/jcadam/burrow/pkg/render"
+	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
 	"github.com/jcadam/burrow/pkg/synthesis"
 )
@@ -102,6 +103,8 @@ func runInteractive(ctx context.Context) error {
 			sess.printSources()
 		case strings.HasPrefix(line, "search ") || strings.HasPrefix(line, "query "):
 			sess.handleServiceQuery(ctx, line)
+		case strings.HasPrefix(line, "view"):
+			sess.handleView(strings.TrimSpace(strings.TrimPrefix(line, "view")))
 		case strings.HasPrefix(line, "draft "):
 			sess.handleDraft(ctx, scanner, strings.TrimPrefix(line, "draft "))
 		case strings.HasPrefix(line, "ask "):
@@ -121,6 +124,7 @@ func (s *interactiveSession) printHelp() {
     search <svc> <tool> [params]  Query a service tool (key=value params)
     query <svc> <tool> [params]   Same as search
     ask <question>                Ask a question over collected context
+    view [routine]                View latest report in interactive viewer
     draft <instruction>           Generate a communication draft
     quit / exit                   Exit interactive mode
 
@@ -144,6 +148,47 @@ func (s *interactiveSession) printSources() {
 		}
 	}
 	fmt.Println()
+}
+
+// handleView opens the latest report in the interactive viewer.
+func (s *interactiveSession) handleView(routine string) {
+	reportsDir := filepath.Join(s.burrowDir, "reports")
+
+	var report *reports.Report
+	var err error
+
+	if routine != "" {
+		report, err = resolveReport(reportsDir, routine)
+		if err != nil {
+			fmt.Printf("  %v\n", err)
+			return
+		}
+	} else {
+		all, err := reports.List(reportsDir)
+		if err != nil {
+			fmt.Printf("  Error listing reports: %v\n", err)
+			return
+		}
+		if len(all) == 0 {
+			fmt.Println("  No reports found.")
+			return
+		}
+		report = all[0]
+	}
+
+	title := report.Title
+	if title == "" {
+		title = report.Routine + " — " + report.Date
+	}
+
+	opts := viewerOptions(s.cfg)
+	if s.ledger != nil {
+		opts = append(opts, render.WithLedger(s.ledger))
+	}
+
+	if err := render.RunViewer(title, report.Markdown, opts...); err != nil {
+		fmt.Printf("  Viewer error: %v\n", err)
+	}
 }
 
 // handleServiceQuery dispatches a query to a named service tool.

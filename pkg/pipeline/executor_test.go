@@ -412,6 +412,64 @@ func TestExecutorPanicRecovery(t *testing.T) {
 	}
 }
 
+func TestTestSources(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{
+		name:     "good-api",
+		response: []byte(`{"ok": true}`),
+		delay:    10 * time.Millisecond,
+	})
+	reg.Register(&mockService{
+		name: "bad-api",
+		err:  fmt.Errorf("connection refused"),
+	})
+
+	synth := synthesis.NewPassthroughSynthesizer()
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "test-sources",
+		Sources: []SourceConfig{
+			{Service: "good-api", Tool: "fetch"},
+			{Service: "bad-api", Tool: "fetch"},
+			{Service: "missing-api", Tool: "fetch"},
+		},
+	}
+
+	statuses := exec.TestSources(context.Background(), routine)
+	if len(statuses) != 3 {
+		t.Fatalf("expected 3 statuses, got %d", len(statuses))
+	}
+
+	// good-api should succeed
+	if !statuses[0].OK {
+		t.Errorf("expected good-api OK, got error: %s", statuses[0].Error)
+	}
+	if statuses[0].Latency < 10*time.Millisecond {
+		t.Error("expected latency >= 10ms for good-api")
+	}
+
+	// bad-api should fail
+	if statuses[1].OK {
+		t.Error("expected bad-api to fail")
+	}
+	if !strings.Contains(statuses[1].Error, "connection refused") {
+		t.Errorf("expected connection refused error, got: %s", statuses[1].Error)
+	}
+
+	// missing-api should fail with service not found
+	if statuses[2].OK {
+		t.Error("expected missing-api to fail")
+	}
+	if !strings.Contains(statuses[2].Error, "service not found") {
+		t.Errorf("expected service not found error, got: %s", statuses[2].Error)
+	}
+}
+
 type failingSynthesizer struct{}
 
 func (f *failingSynthesizer) Synthesize(_ context.Context, _ string, _ string, _ []*services.Result) (string, error) {
