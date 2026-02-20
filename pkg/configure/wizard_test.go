@@ -53,8 +53,8 @@ func TestWizardRunInitNone(t *testing.T) {
 }
 
 func TestWizardRunInitWithService(t *testing.T) {
-	// Choose none LLM, add a service with API key auth, one tool, 0 params, accept privacy, defaults
-	input := "3\ny\ntest-api\nhttps://api.test.com\n1\n${TEST_KEY}\n\nn\ny\n\n\n"
+	// Choose none LLM, add a service with API key auth, skip spec URL, no tool, accept privacy, defaults
+	input := "3\ny\ntest-api\nhttps://api.test.com\n1\n${TEST_KEY}\n\n\nn\ny\n\n\n"
 	r := strings.NewReader(input)
 	var out bytes.Buffer
 
@@ -95,6 +95,32 @@ func TestWizardRunInitOpenRouter(t *testing.T) {
 	}
 	if cfg.LLM.Providers[0].APIKey != "${OPENROUTER_KEY}" {
 		t.Errorf("expected ${OPENROUTER_KEY}, got %q", cfg.LLM.Providers[0].APIKey)
+	}
+}
+
+func TestWizardRunInitWithServiceAndSpec(t *testing.T) {
+	// Choose none LLM, add a service with "none" auth, provide spec URL, skip tool, accept privacy, defaults
+	// Flow: 3 (LLM) → y (add service) → name → endpoint → 5 (none auth) → spec URL → n (no tool) → y (privacy) → enter → enter
+	input := "3\ny\nmy-api\nhttps://api.example.com\n5\nhttps://api.example.com/openapi.json\nn\ny\n\n\n"
+	r := strings.NewReader(input)
+	var out bytes.Buffer
+
+	wiz := NewWizard(r, &out)
+	cfg, err := wiz.RunInit()
+	if err != nil {
+		t.Fatalf("RunInit: %v", err)
+	}
+
+	if len(cfg.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(cfg.Services))
+	}
+	if cfg.Services[0].Spec != "https://api.example.com/openapi.json" {
+		t.Errorf("expected spec URL, got %q", cfg.Services[0].Spec)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Spec URL saved") {
+		t.Error("expected spec URL confirmation message")
 	}
 }
 

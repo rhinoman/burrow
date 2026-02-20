@@ -2,6 +2,10 @@ package configure
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jcadam/burrow/pkg/config"
@@ -250,5 +254,206 @@ func TestSessionHistory(t *testing.T) {
 
 	if len(session.history) != 4 { // 2 user + 2 assistant
 		t.Errorf("expected 4 history entries, got %d", len(session.history))
+	}
+}
+
+// capturingProvider records the system and user prompts sent to the LLM.
+type capturingProvider struct {
+	response     string
+	systemPrompt string
+	userPrompt   string
+}
+
+func (c *capturingProvider) Complete(_ context.Context, system, user string) (string, error) {
+	c.systemPrompt = system
+	c.userPrompt = user
+	return c.response, nil
+}
+
+func TestSessionFetchesSpecOnFirstMessage(t *testing.T) {
+	specBody := `{"openapi": "3.0.0", "info": {"title": "Pet Store"}, "paths": {"/pets": {"get": {}}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(specBody))
+	}))
+	defer srv.Close()
+
+	provider := &capturingProvider{response: "I see the Pet Store API."}
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "petstore",
+				Type:     "rest",
+				Endpoint: "https://petstore.example.com",
+				Auth:     config.AuthConfig{Method: "none"},
+				Spec:     srv.URL,
+			},
+		},
+	}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	_, _, err := session.ProcessMessage(context.Background(), "Show me the petstore endpoints")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+
+	if !strings.Contains(provider.systemPrompt, "Pet Store") {
+		t.Error("expected spec content in system prompt")
+	}
+	if !strings.Contains(provider.systemPrompt, "API Specification for service") {
+		t.Error("expected spec context header in system prompt")
+	}
+}
+
+func TestSessionSpecCachedAcrossMessages(t *testing.T) {
+	var requestCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"openapi": "3.0.0"}`))
+	}))
+	defer srv.Close()
+
+	provider := &capturingProvider{response: "OK."}
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "cached-api",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth:     config.AuthConfig{Method: "none"},
+				Spec:     srv.URL,
+			},
+		},
+	}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	session.ProcessMessage(context.Background(), "first")
+	session.ProcessMessage(context.Background(), "second")
+
+	if count := requestCount.Load(); count != 1 {
+		t.Errorf("expected 1 spec fetch, got %d", count)
+	}
+}
+
+func TestSessionSpecFetchErrorDoesNotBlock(t *testing.T) {
+	var requestCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	provider := &capturingProvider{response: "I can still help."}
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "broken-api",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth:     config.AuthConfig{Method: "none"},
+				Spec:     srv.URL,
+			},
+		},
+	}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	resp, _, err := session.ProcessMessage(context.Background(), "help")
+	if err != nil {
+		t.Fatalf("ProcessMessage should succeed despite spec error: %v", err)
+	}
+	if resp == "" {
+		t.Error("expected non-empty response")
+	}
+
+	// Call again — error should be cached, not retried.
+	session.ProcessMessage(context.Background(), "again")
+	if count := requestCount.Load(); count != 1 {
+		t.Errorf("expected 1 spec fetch attempt (error cached), got %d", count)
+	}
+
+	// Spec error should not appear in system prompt.
+	if strings.Contains(provider.systemPrompt, "API Specification") {
+		t.Error("failed spec should not appear in system prompt")
+	}
+}
+
+func TestSessionSpecAfterConfigChange(t *testing.T) {
+	specBody := `{"openapi": "3.0.0", "info": {"title": "New API"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(specBody))
+	}))
+	defer srv.Close()
+
+	provider := &capturingProvider{response: "OK."}
+	cfg := &config.Config{} // No services initially.
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	// First message — no specs.
+	session.ProcessMessage(context.Background(), "hello")
+	if strings.Contains(provider.systemPrompt, "API Specification") {
+		t.Error("no spec expected before service added")
+	}
+
+	// Apply a config change that adds a service with a spec URL.
+	newCfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "new-api",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth:     config.AuthConfig{Method: "none"},
+				Spec:     srv.URL,
+			},
+		},
+	}
+	session.ApplyChange(&Change{Config: newCfg, Description: "add service"})
+
+	// Second message — spec should be fetched and included.
+	session.ProcessMessage(context.Background(), "show me the new API")
+	if !strings.Contains(provider.systemPrompt, "New API") {
+		t.Error("expected spec content in system prompt after config change")
+	}
+}
+
+func TestSessionSpecPrunedAfterServiceRemoval(t *testing.T) {
+	specBody := `{"openapi": "3.0.0", "info": {"title": "Removable API"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(specBody))
+	}))
+	defer srv.Close()
+
+	provider := &capturingProvider{response: "OK."}
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "temp-api",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth:     config.AuthConfig{Method: "none"},
+				Spec:     srv.URL,
+			},
+		},
+	}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	// First message — spec fetched and included.
+	session.ProcessMessage(context.Background(), "hello")
+	if !strings.Contains(provider.systemPrompt, "Removable API") {
+		t.Fatal("expected spec in system prompt")
+	}
+
+	// Apply config change that removes the service.
+	session.ApplyChange(&Change{Config: &config.Config{}, Description: "remove service"})
+
+	// Next message — stale spec should be pruned.
+	session.ProcessMessage(context.Background(), "what now")
+	if strings.Contains(provider.systemPrompt, "Removable API") {
+		t.Error("stale spec should be pruned after service removal")
+	}
+	if strings.Contains(provider.systemPrompt, "API Specification") {
+		t.Error("no spec context expected after service removal")
 	}
 }

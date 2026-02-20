@@ -27,7 +27,7 @@ type ServiceConfig struct {
 	Type     string       `yaml:"type"` // rest | mcp
 	Endpoint string       `yaml:"endpoint"`
 	Auth     AuthConfig   `yaml:"auth"`
-	Spec     string       `yaml:"spec,omitempty"` // Reserved: OpenAPI/Swagger spec URL for auto-discovery (Phase 4)
+	Spec     string       `yaml:"spec,omitempty"` // OpenAPI/Swagger spec URL for auto-discovery of tool mappings
 	Tools    []ToolConfig `yaml:"tools,omitempty"`
 	CacheTTL int          `yaml:"cache_ttl,omitempty"`
 }

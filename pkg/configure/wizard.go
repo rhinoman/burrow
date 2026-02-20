@@ -206,6 +206,13 @@ func (w *Wizard) configureFirstService(cfg *config.Config) error {
 		svc.Auth.Method = "none"
 	}
 
+	// API spec URL (optional — used by conversational config to auto-generate tools)
+	specURL := w.prompt("  API spec URL (OpenAPI/Swagger, or Enter to skip): ")
+	if strings.TrimSpace(specURL) != "" {
+		svc.Spec = strings.TrimSpace(specURL)
+		w.print("  Spec URL saved. Run 'gd configure' with an LLM to auto-generate tools.\n")
+	}
+
 	// Tools
 	w.print("\n  Add a tool for this service? (y/n): ")
 	if strings.ToLower(strings.TrimSpace(w.prompt(""))) == "y" {
