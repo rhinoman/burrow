@@ -78,13 +78,13 @@ var contextShowCmd = &cobra.Command{
 			return err
 		}
 
-		types := []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession}
+		types := []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact}
 		if contextShowType != "" {
 			switch contextShowType {
-			case bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession:
+			case bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact:
 				types = []string{contextShowType}
 			default:
-				return fmt.Errorf("unknown type %q (use report, result, or session)", contextShowType)
+				return fmt.Errorf("unknown type %q (use report, result, session, or contact)", contextShowType)
 			}
 		}
 
@@ -144,7 +144,7 @@ var contextStatsCmd = &cobra.Command{
 		fmt.Printf("  %-10s  %5s  %10s  %-12s  %-12s\n", "Type", "Count", "Size", "Earliest", "Latest")
 		fmt.Printf("  %-10s  %5s  %10s  %-12s  %-12s\n", "----", "-----", "----", "--------", "------")
 
-		for _, entryType := range []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession} {
+		for _, entryType := range []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact} {
 			ts, ok := stats[entryType]
 			if !ok {
 				continue
@@ -179,7 +179,7 @@ var contextClearCmd = &cobra.Command{
 			return nil
 		}
 
-		for _, sub := range []string{"reports", "results", "sessions"} {
+		for _, sub := range []string{"reports", "results", "sessions", "contacts"} {
 			dir := filepath.Join(contextDir, sub)
 			if err := os.RemoveAll(dir); err != nil {
 				return fmt.Errorf("removing %s: %w", sub, err)

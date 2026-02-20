@@ -20,12 +20,13 @@ const (
 	TypeReport  = "report"
 	TypeResult  = "result"
 	TypeSession = "session"
+	TypeContact = "contact"
 )
 
 // Entry is a single item in the context ledger.
 type Entry struct {
 	ID        string
-	Type      string // report | result | session
+	Type      string // report | result | session | contact
 	Label     string
 	Routine   string
 	Timestamp time.Time
@@ -40,7 +41,7 @@ type Ledger struct {
 
 // NewLedger creates a ledger rooted at the given directory.
 func NewLedger(root string) (*Ledger, error) {
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("creating context directory %s: %w", sub, err)
 		}
@@ -90,7 +91,7 @@ func (l *Ledger) Search(query string) ([]Entry, error) {
 	query = strings.ToLower(query)
 	var entries []Entry
 
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
 		dir := filepath.Join(l.root, sub)
 		files, err := os.ReadDir(dir)
 		if err != nil {
@@ -161,7 +162,7 @@ func (l *Ledger) List(entryType string, limit int) ([]Entry, error) {
 func (l *Ledger) GatherContext(maxBytes int) (string, error) {
 	var all []Entry
 
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
 		dir := filepath.Join(l.root, sub)
 		files, err := os.ReadDir(dir)
 		if err != nil {
@@ -210,7 +211,7 @@ type TypeStats struct {
 func (l *Ledger) Stats() (map[string]TypeStats, error) {
 	stats := make(map[string]TypeStats)
 
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
 		entryType := strings.TrimSuffix(sub, "s")
 		dir := filepath.Join(l.root, sub)
 		files, err := os.ReadDir(dir)

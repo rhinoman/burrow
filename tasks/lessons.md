@@ -163,3 +163,10 @@
 - Discarding the error with `_` silently produces a relative path ("cache" instead of "~/.burrow/cache")
 - This violates the "All file I/O under ~/.burrow/" invariant
 - Fix: accept the path as a parameter from callers that already have it, or propagate the error
+
+## Tests must not depend on system timezone
+- `time.Local` varies by machine (e.g., AKST = UTC-9 on this machine)
+- `time.Date(2025, 1, 15, 5, 1, 0, 0, time.UTC)` converted to AKST gives Jan 14, not Jan 15
+- Any test comparing dates after timezone conversion must use explicit `time.Location`
+- For test routines with Schedule fields: always set `Timezone: "UTC"` explicitly
+- For isDue tests: pass `time.UTC` as the loc parameter directly

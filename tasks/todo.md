@@ -353,3 +353,104 @@
 - [x] `go vet ./...` — clean
 - [x] `go test ./... -count=1` — all 17 packages pass
 - [x] `go test -race ./...` — no races detected
+
+---
+
+# Phase 8: Scheduler / Daemon
+
+## Implementation
+
+- [x] Step 1: `pkg/scheduler/scheduler.go` — Clock/StateStore interfaces, parseSchedule, isDue, routineLocation, Scheduler with 1-minute tick loop
+- [x] Step 1: `pkg/scheduler/scheduler.go` — FileStateStore (atomic JSON), MemoryStateStore (testing)
+- [x] Step 2: `pkg/scheduler/scheduler_test.go` — testClock, 14 parseSchedule cases, 8 isDue cases, 5 timezone cases, 7 scheduler integration tests, 4 FileStateStore tests, routineLocation tests
+- [x] Step 3: `cmd/gd/cmd_daemon.go` — `gd daemon` command, `--once` flag, `runRoutine` helper with fresh config per execution
+
+## New Files (3)
+
+- `pkg/scheduler/scheduler.go` — Clock, StateStore, Scheduler, parseSchedule, isDue, FileStateStore, MemoryStateStore
+- `pkg/scheduler/scheduler_test.go` — testClock, all unit and integration tests (14 test functions)
+- `cmd/gd/cmd_daemon.go` — `gd daemon` command, `--once` flag, `runRoutine` helper
+
+## Modified Files (0)
+
+No existing files modified. Cobra subcommands register via `init()` in their own files.
+
+## Design Notes
+
+- Scheduler knows WHEN (schedule evaluation), not HOW (execution via RoutineRunner callback)
+- State file (`~/.burrow/scheduler-state.json`) tracks last-run date per routine in routine's timezone
+- Failed runs not recorded — retries on next tick
+- Config reloaded fresh per routine execution (no credential caching across sessions)
+- `_ "time/tzdata"` import ensures timezone data on minimal systems (+~450KB)
+- Tests use explicit `Timezone: "UTC"` on routines to avoid system locale dependency
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 18 packages pass
+- [x] `go test -race ./...` — no races detected
+- [x] `gd daemon --help` — shows correct usage, flags
+- [x] All tests use injectable clock/state/loader/runner — zero network access, zero wall-clock delays
+
+## Code Review Round 16 Fixes
+
+- [x] **MEDIUM** State file TOCTOU race on concurrent completions — added `stateMu sync.Mutex` to serialize load→modify→save in completion goroutines. New `TestSchedulerConcurrentCompletionsBothPersist` verifies both routines' state persists.
+- [x] **LOW** Invalid schedule silently never fires — `tick()` now validates schedule format via `parseSchedule` before calling `isDue`, logs error to stderr. New `TestSchedulerLogsInvalidSchedule` verifies.
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 18 packages pass (16 scheduler tests)
+- [x] `go test -race ./pkg/scheduler/` — no races detected
+
+---
+
+# Phase 9: Contacts Package
+
+## Implementation
+
+- [x] Step 1: `pkg/contacts/contacts.go` — Contact struct, Store CRUD (Add/Get/List/Remove), Search, Lookup, ForContext, Count
+- [x] Step 2: `pkg/contacts/import_csv.go` — CSV import with convention-based header mapping
+- [x] Step 3: `pkg/contacts/import_vcard.go` — vCard 3.0/4.0 parser (FN, EMAIL, ORG, TITLE, TEL, NOTE)
+- [x] Step 4: `pkg/contacts/contacts_test.go` — 26 tests covering CRUD, search, lookup, CSV import, vCard import, ForContext
+- [x] Step 5: `cmd/gd/cmd_contacts.go` — CLI commands: list, add, import, search, show, remove
+- [x] Step 6: `pkg/context/ledger.go` — Added TypeContact constant, included "contacts" in 4 subdirectory slices
+- [x] Step 7: `cmd/gd/interactive.go` — Added contacts store to session, inject ForContext into draft/ask context
+- [x] Step 7b: `cmd/gd/cmd_context.go` — Updated context show/stats/clear to include contact type
+
+## New Files (4 source + 1 test)
+
+- `pkg/contacts/contacts.go` — Contact struct, Store CRUD, Search, Lookup, ForContext
+- `pkg/contacts/import_csv.go` — CSV import with header mapping
+- `pkg/contacts/import_vcard.go` — vCard parser (FN, EMAIL, ORG, TITLE, TEL, NOTE)
+- `pkg/contacts/contacts_test.go` — 26 tests
+- `cmd/gd/cmd_contacts.go` — CLI commands: list, add, import, search, show, remove
+
+## Modified Files (3)
+
+- `pkg/context/ledger.go` — Added TypeContact constant, "contacts" in 4 subdirectory slices
+- `cmd/gd/interactive.go` — contacts store in session, ForContext injection into ask/draft
+- `cmd/gd/cmd_context.go` — context show/stats/clear include contact type
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 19 packages pass
+- [x] `go test -race ./...` — no races detected
+
+## Code Review Round 18 Fixes
+
+- [x] **MEDIUM** Import indexes ALL contacts, not just newly imported — refactored import command to call ParseCSV/ParseVCard directly, then Add each, index only the parsed contacts
+- [x] **MEDIUM** indexContactInLedger creates a new Ledger per call — refactored to accept `*bcontext.Ledger` parameter; callers create one instance via `openLedgerForContacts()`
+- [x] **LOW** ImportCSV/ImportVCard count includes failed Add()s — both now count only successfully added contacts
+- [x] **LOW** Entry struct comment stale — updated `Type` comment to include `| contact`
+- [x] **NITPICK** ImportVCard no size guard — added `os.Stat` + 10MB limit check before `os.ReadFile`
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 19 packages pass

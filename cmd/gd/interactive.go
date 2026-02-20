@@ -11,6 +11,7 @@ import (
 
 	"github.com/jcadam/burrow/pkg/actions"
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/contacts"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	"github.com/jcadam/burrow/pkg/render"
 	"github.com/jcadam/burrow/pkg/reports"
@@ -24,6 +25,7 @@ type interactiveSession struct {
 	cfg       *config.Config
 	registry  *services.Registry
 	ledger    *bcontext.Ledger
+	contacts  *contacts.Store
 	provider  synthesis.Provider
 	handoff   *actions.Handoff
 }
@@ -56,6 +58,10 @@ func runInteractive(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "warning: could not open context ledger: %v\n", err)
 	}
 
+	// Open contacts store
+	contactsDir := filepath.Join(burrowDir, "contacts")
+	contactStore, _ := contacts.NewStore(contactsDir)
+
 	// Find provider — local only. Interactive mode uses the same policy as
 	// "gd ask": zero network requests for reasoning. Remote providers are
 	// intentionally excluded to maintain compartmentalization.
@@ -69,13 +75,20 @@ func runInteractive(ctx context.Context) error {
 		cfg:       cfg,
 		registry:  registry,
 		ledger:    ledger,
+		contacts:  contactStore,
 		provider:  provider,
 		handoff:   handoff,
 	}
 
 	// Print banner
 	svcCount := len(cfg.Services)
-	fmt.Printf("\n  Burrow %s . %d source(s) configured\n", version, svcCount)
+	fmt.Printf("\n  Burrow %s . %d source(s) configured", version, svcCount)
+	if contactStore != nil {
+		if n := contactStore.Count(); n > 0 {
+			fmt.Printf(" . %d contact(s)", n)
+		}
+	}
+	fmt.Println()
 	if provider != nil {
 		fmt.Println("  Local LLM available for reasoning")
 	}
@@ -238,6 +251,12 @@ func (s *interactiveSession) handleAsk(ctx context.Context, question string) {
 			fmt.Printf("  Error gathering context: %v\n", err)
 			return
 		}
+		if s.contacts != nil {
+			if cc := s.contacts.ForContext(); cc != "" {
+				contextData += "\n" + cc
+			}
+		}
+
 		if contextData != "" {
 			var userPrompt strings.Builder
 			userPrompt.WriteString("Question: ")
@@ -301,6 +320,11 @@ func (s *interactiveSession) handleDraft(ctx context.Context, scanner *bufio.Sca
 	var contextData string
 	if s.ledger != nil {
 		contextData, _ = s.ledger.GatherContext(50_000)
+	}
+	if s.contacts != nil {
+		if cc := s.contacts.ForContext(); cc != "" {
+			contextData += "\n" + cc
+		}
 	}
 
 	fmt.Println("  Generating draft...")
