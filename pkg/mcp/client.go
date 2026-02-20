@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -210,11 +211,18 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 }
 
 // NewHTTPClient builds an *http.Client suitable for MCP requests, with per-service
-// transport isolation, auth injection, and optional privacy wrapping.
-func NewHTTPClient(auth config.AuthConfig, privacyCfg *privacy.Config) *http.Client {
-	var transport http.RoundTripper = &http.Transport{}
+// transport isolation, auth injection, and optional privacy wrapping. proxyURL sets
+// the proxy on the underlying transport (empty string means direct connection).
+func NewHTTPClient(auth config.AuthConfig, privacyCfg *privacy.Config, proxyURL string) *http.Client {
+	baseTransport := &http.Transport{}
+	if proxyURL != "" {
+		if parsed, err := url.Parse(proxyURL); err == nil && parsed != nil {
+			baseTransport.Proxy = http.ProxyURL(parsed)
+		}
+	}
+	var transport http.RoundTripper = baseTransport
 	if privacyCfg != nil {
-		transport = privacy.NewTransport(&http.Transport{}, *privacyCfg)
+		transport = privacy.NewTransport(baseTransport, *privacyCfg)
 	}
 	transport = &authTransport{base: transport, auth: auth}
 	return &http.Client{Timeout: 30 * time.Second, Transport: transport}

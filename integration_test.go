@@ -148,7 +148,7 @@ sources:
 	// 2. Build registry (nil privacy config for basic test)
 	registry := services.NewRegistry()
 	for _, svcCfg := range cfg.Services {
-		svc := bhttp.NewRESTService(svcCfg, nil)
+		svc := bhttp.NewRESTService(svcCfg, nil, "")
 		if err := registry.Register(svc); err != nil {
 			t.Fatalf("Register %q: %v", svcCfg.Name, err)
 		}
@@ -271,7 +271,7 @@ func TestPrivacyHeaders(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, privCfg)
+	}, privCfg, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -315,7 +315,7 @@ func TestContextLedgerAfterPipeline(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 	registry.Register(svc)
 
 	synth := synthesis.NewPassthroughSynthesizer()
@@ -394,7 +394,7 @@ func TestParallelExecution(t *testing.T) {
 			Tools: []config.ToolConfig{
 				{Name: "fetch", Method: "GET", Path: "/data"},
 			},
-		}, nil)
+		}, nil, "")
 		registry.Register(svc)
 	}
 
@@ -535,7 +535,7 @@ func TestCachingIntegration(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 	cached := bcache.NewCachedService(inner, cacheDir, 3600)
 
 	registry := services.NewRegistry()
@@ -604,7 +604,7 @@ func TestCompareWithIntegration(t *testing.T) {
 		Endpoint: srv.URL,
 		Auth:     config.AuthConfig{Method: "none"},
 		Tools:    []config.ToolConfig{{Name: "fetch", Method: "GET", Path: "/data"}},
-	}, nil)
+	}, nil, "")
 	registry.Register(svc)
 
 	// Use a capturing synthesizer to verify the system prompt.

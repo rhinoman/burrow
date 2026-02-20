@@ -269,7 +269,7 @@ func TestNewHTTPClientBearerAuth(t *testing.T) {
 
 	httpClient := NewHTTPClient(
 		config.AuthConfig{Method: "bearer", Token: "my-secret-token"},
-		nil,
+		nil, "",
 	)
 
 	client := NewClient(srv.URL, httpClient)
@@ -303,7 +303,7 @@ func TestNewHTTPClientAPIKeyHeader(t *testing.T) {
 
 	httpClient := NewHTTPClient(
 		config.AuthConfig{Method: "api_key_header", Key: "key-123"},
-		nil,
+		nil, "",
 	)
 
 	client := NewClient(srv.URL, httpClient)

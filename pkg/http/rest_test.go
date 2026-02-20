@@ -43,7 +43,7 @@ func TestExecuteGET(t *testing.T) {
 				},
 			},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "search", map[string]string{
 		"naics": "541370",
@@ -78,7 +78,7 @@ func TestExecuteAPIKeyAuth(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -105,7 +105,7 @@ func TestExecuteAPIKeyCustomParam(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -133,7 +133,7 @@ func TestExecuteBearerAuth(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestExecuteUserAgentAuth(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -194,7 +194,7 @@ func TestExecuteUserAgentAuthWithPrivacy(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, privCfg)
+	}, privCfg, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -219,7 +219,7 @@ func TestExecuteHTTPError(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/missing"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -246,7 +246,7 @@ func TestExecuteAbsoluteToolPath(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "search", Method: "GET", Path: "/v2/search"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "search", nil)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestBuildURLPreservesExistingQueryParams(t *testing.T) {
 				},
 			},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "search", map[string]string{
 		"naics": "541370",
@@ -302,7 +302,7 @@ func TestExecuteUnknownTool(t *testing.T) {
 		Name:     "test",
 		Endpoint: "http://localhost",
 		Auth:     config.AuthConfig{Method: "none"},
-	}, nil)
+	}, nil, "")
 
 	_, err := svc.Execute(context.Background(), "nonexistent", nil)
 	if err == nil {
@@ -345,7 +345,7 @@ func TestExecutePOSTWithBody(t *testing.T) {
 				},
 			},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "search", map[string]string{
 		"query": `{"term": "test"}`,
@@ -379,7 +379,7 @@ func TestExecutePOSTWithoutBody(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "action", Method: "POST", Path: "/v1/action"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "action", nil)
 	if err != nil {
@@ -408,7 +408,7 @@ func TestExecutePOSTBodyParamMissing(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "search", Method: "POST", Path: "/v1/search", Body: "query"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "search", nil)
 	if err != nil {
@@ -424,12 +424,12 @@ func TestTransportIsolation(t *testing.T) {
 		Name:     "svc-a",
 		Endpoint: "http://localhost",
 		Auth:     config.AuthConfig{Method: "none"},
-	}, nil)
+	}, nil, "")
 	svcB := NewRESTService(config.ServiceConfig{
 		Name:     "svc-b",
 		Endpoint: "http://localhost",
 		Auth:     config.AuthConfig{Method: "none"},
-	}, nil)
+	}, nil, "")
 
 	tA := svcA.client.Transport
 	tB := svcB.client.Transport
@@ -447,12 +447,12 @@ func TestTransportIsolationWithPrivacy(t *testing.T) {
 		Name:     "svc-a",
 		Endpoint: "http://localhost",
 		Auth:     config.AuthConfig{Method: "none"},
-	}, privCfg)
+	}, privCfg, "")
 	svcB := NewRESTService(config.ServiceConfig{
 		Name:     "svc-b",
 		Endpoint: "http://localhost",
 		Auth:     config.AuthConfig{Method: "none"},
-	}, privCfg)
+	}, privCfg, "")
 
 	if svcA.client.Transport == svcB.client.Transport {
 		t.Error("services must have distinct transports even with privacy config")
@@ -479,7 +479,7 @@ func TestExecuteAPIKeyHeaderAuth(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -506,7 +506,7 @@ func TestExecuteAPIKeyHeaderCustomName(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, nil)
+	}, nil, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -542,7 +542,7 @@ func TestPrivacyTransportApplied(t *testing.T) {
 		Tools: []config.ToolConfig{
 			{Name: "fetch", Method: "GET", Path: "/data"},
 		},
-	}, privCfg)
+	}, privCfg, "")
 
 	result, err := svc.Execute(context.Background(), "fetch", nil)
 	if err != nil {
@@ -550,5 +550,31 @@ func TestPrivacyTransportApplied(t *testing.T) {
 	}
 	if result.Error != "" {
 		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
+func TestProxyURLSetOnTransport(t *testing.T) {
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "proxy-test",
+		Endpoint: "http://localhost",
+		Auth:     config.AuthConfig{Method: "none"},
+	}, nil, "socks5h://127.0.0.1:9050")
+
+	transport := svc.client.Transport.(*http.Transport)
+	if transport.Proxy == nil {
+		t.Fatal("expected Proxy function to be set on transport")
+	}
+
+	// Verify the proxy function returns the correct URL.
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	proxyURL, err := transport.Proxy(req)
+	if err != nil {
+		t.Fatalf("Proxy function error: %v", err)
+	}
+	if proxyURL == nil {
+		t.Fatal("expected non-nil proxy URL")
+	}
+	if got := proxyURL.String(); got != "socks5h://127.0.0.1:9050" {
+		t.Errorf("expected socks5h://127.0.0.1:9050, got %q", got)
 	}
 }

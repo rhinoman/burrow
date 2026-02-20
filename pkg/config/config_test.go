@@ -556,3 +556,134 @@ func TestValidateRetentionInvalidReports(t *testing.T) {
 		t.Fatalf("reports='' should be valid: %v", err)
 	}
 }
+
+func TestValidateProxyDefaultValid(t *testing.T) {
+	cfg := &Config{
+		Privacy: PrivacyConfig{DefaultProxy: "socks5h://127.0.0.1:9050"},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("valid default proxy should pass: %v", err)
+	}
+}
+
+func TestValidateProxyDefaultInvalid(t *testing.T) {
+	cfg := &Config{
+		Privacy: PrivacyConfig{DefaultProxy: "ftp://bad"},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for ftp:// proxy")
+	}
+	if !strings.Contains(err.Error(), "default_proxy") {
+		t.Errorf("expected default_proxy in error, got: %v", err)
+	}
+}
+
+func TestValidateProxyRouteUnknownService(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{Name: "sam-gov", Type: "rest", Endpoint: "http://example.com"},
+		},
+		Privacy: PrivacyConfig{
+			Routes: []RouteConfig{
+				{Service: "nonexistent", Proxy: "tor"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for unknown service in route")
+	}
+	if !strings.Contains(err.Error(), "unknown service") {
+		t.Errorf("expected 'unknown service' in error, got: %v", err)
+	}
+}
+
+func TestValidateProxyRouteMissingServiceName(t *testing.T) {
+	cfg := &Config{
+		Privacy: PrivacyConfig{
+			Routes: []RouteConfig{
+				{Service: "", Proxy: "tor"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for empty service name in route")
+	}
+	if !strings.Contains(err.Error(), "missing service name") {
+		t.Errorf("expected 'missing service name' in error, got: %v", err)
+	}
+}
+
+func TestValidateProxyRouteInvalidProxy(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{Name: "sam-gov", Type: "rest", Endpoint: "http://example.com"},
+		},
+		Privacy: PrivacyConfig{
+			Routes: []RouteConfig{
+				{Service: "sam-gov", Proxy: "ftp://bad-proxy"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for invalid proxy URL in route")
+	}
+}
+
+func TestValidateProxyTorShorthand(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{Name: "sam-gov", Type: "rest", Endpoint: "http://example.com"},
+		},
+		Privacy: PrivacyConfig{
+			DefaultProxy: "tor",
+			Routes: []RouteConfig{
+				{Service: "sam-gov", Proxy: "tor"},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("tor shorthand should be valid: %v", err)
+	}
+}
+
+func TestValidateProxyDirectShorthand(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{Name: "sam-gov", Type: "rest", Endpoint: "http://example.com"},
+		},
+		Privacy: PrivacyConfig{
+			DefaultProxy: "tor",
+			Routes: []RouteConfig{
+				{Service: "sam-gov", Proxy: "direct"},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("direct shorthand should be valid: %v", err)
+	}
+}
+
+func TestValidateProxyRouteDuplicateService(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{Name: "sam-gov", Type: "rest", Endpoint: "http://example.com"},
+		},
+		Privacy: PrivacyConfig{
+			Routes: []RouteConfig{
+				{Service: "sam-gov", Proxy: "tor"},
+				{Service: "sam-gov", Proxy: "direct"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for duplicate route service")
+	}
+	if !strings.Contains(err.Error(), "duplicate route") {
+		t.Errorf("expected 'duplicate route' in error, got: %v", err)
+	}
+}

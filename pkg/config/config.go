@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/jcadam/burrow/pkg/privacy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -302,6 +303,27 @@ func Validate(cfg *Config) error {
 			// valid
 		default:
 			return fmt.Errorf("invalid rendering.images value %q", cfg.Rendering.Images)
+		}
+	}
+
+	// Validate proxy configuration
+	if err := privacy.ValidateProxyURL(cfg.Privacy.DefaultProxy); err != nil {
+		return fmt.Errorf("privacy.default_proxy: %w", err)
+	}
+	routeServices := make(map[string]bool)
+	for _, route := range cfg.Privacy.Routes {
+		if route.Service == "" {
+			return fmt.Errorf("privacy.routes: route missing service name")
+		}
+		if routeServices[route.Service] {
+			return fmt.Errorf("privacy.routes: duplicate route for service %q", route.Service)
+		}
+		routeServices[route.Service] = true
+		if !names[route.Service] {
+			return fmt.Errorf("privacy.routes: route references unknown service %q", route.Service)
+		}
+		if err := privacy.ValidateProxyURL(route.Proxy); err != nil {
+			return fmt.Errorf("privacy.routes[%s]: %w", route.Service, err)
 		}
 	}
 

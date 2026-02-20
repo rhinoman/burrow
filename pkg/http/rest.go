@@ -27,8 +27,9 @@ type RESTService struct {
 // NewRESTService creates a REST service from config. Each service gets its own
 // http.Client to support per-service proxy routing. If privacyCfg is non-nil,
 // a privacy transport is applied for referrer stripping, UA rotation, and
-// request minimization.
-func NewRESTService(cfg config.ServiceConfig, privacyCfg *privacy.Config) *RESTService {
+// request minimization. proxyURL sets the proxy on the underlying transport
+// (empty string means direct connection).
+func NewRESTService(cfg config.ServiceConfig, privacyCfg *privacy.Config, proxyURL string) *RESTService {
 	tools := make(map[string]config.ToolConfig, len(cfg.Tools))
 	for _, tool := range cfg.Tools {
 		tools[tool.Name] = tool
@@ -36,9 +37,15 @@ func NewRESTService(cfg config.ServiceConfig, privacyCfg *privacy.Config) *RESTS
 
 	// Each service gets its own transport to prevent connection pool sharing.
 	// Shared pools break compartmentalization (spec §2.2).
-	var transport http.RoundTripper = &http.Transport{}
+	baseTransport := &http.Transport{}
+	if proxyURL != "" {
+		if parsed, err := url.Parse(proxyURL); err == nil && parsed != nil {
+			baseTransport.Proxy = http.ProxyURL(parsed)
+		}
+	}
+	var transport http.RoundTripper = baseTransport
 	if privacyCfg != nil {
-		transport = privacy.NewTransport(&http.Transport{}, *privacyCfg)
+		transport = privacy.NewTransport(baseTransport, *privacyCfg)
 	}
 
 	return &RESTService{

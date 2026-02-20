@@ -265,17 +265,24 @@ func buildRegistry(cfg *config.Config, burrowDir string) (*services.Registry, er
 		}
 	}
 
+	// Build route entries for per-service proxy resolution.
+	routes := make([]privacy.RouteEntry, len(cfg.Privacy.Routes))
+	for i, r := range cfg.Privacy.Routes {
+		routes[i] = privacy.RouteEntry{Service: r.Service, Proxy: r.Proxy}
+	}
+
 	cacheDir := filepath.Join(burrowDir, "cache")
 
 	registry := services.NewRegistry()
 	for _, svcCfg := range cfg.Services {
 		var svc services.Service
+		proxyURL := privacy.ResolveProxy(svcCfg.Name, cfg.Privacy.DefaultProxy, routes)
 
 		switch svcCfg.Type {
 		case "rest":
-			svc = bhttp.NewRESTService(svcCfg, privCfg)
+			svc = bhttp.NewRESTService(svcCfg, privCfg, proxyURL)
 		case "mcp":
-			httpClient := mcp.NewHTTPClient(svcCfg.Auth, privCfg)
+			httpClient := mcp.NewHTTPClient(svcCfg.Auth, privCfg, proxyURL)
 			svc = mcp.NewMCPService(svcCfg.Name, svcCfg.Endpoint, httpClient)
 		default:
 			fmt.Fprintf(os.Stderr, "warning: unknown service type %q for %q, skipping\n", svcCfg.Type, svcCfg.Name)
