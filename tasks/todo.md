@@ -454,3 +454,52 @@ No existing files modified. Cobra subcommands register via `init()` in their own
 - [x] `go build ./cmd/gd` — clean
 - [x] `go vet ./...` — clean
 - [x] `go test ./... -count=1` — all 19 packages pass
+
+---
+
+# Phase 10: Retention + Context Polish
+
+## Implementation
+
+- [x] Step 1: `pkg/context/ledger.go` — `TypeNote` constant, `PruneExpired(retention)` method, `parseTimestampFromFilename`, `notes/` in 5 slice literals
+- [x] Step 2: `pkg/config/config.go` — retention validation in `Validate()` (negative days, invalid reports string)
+- [x] Step 3: `cmd/gd/cmd_context.go` — `gd context prune` command, `TypeNote` in show/stats/clear type lists
+- [x] Step 4: `cmd/gd/cmd_daemon.go` — retention prune after successful routine execution
+- [x] Step 5: `cmd/gd/cmd_note.go` — `gd note <text>` command
+- [x] Step 6: `pkg/configure/wizard.go` — remote LLM warning with acknowledge prompt in `configureLLM` case 2
+- [x] Step 6b: `pkg/configure/session.go` — `RemoteLLMWarning` field on `Change`, `hasNewRemoteProvider` check in `ApplyChange`
+- [x] Step 6c: `cmd/gd/cmd_configure.go` + `cmd/gd/cmd_init.go` — display remote LLM warning after ApplyChange
+- [x] Step 7: `cmd/gd/interactive.go` — config validation warning on startup
+- [x] Step 7b: `cmd/gd/cmd_ask.go` — config validation warning, contact injection into `askWithLLM`
+- [x] Step 8: Tests — 8 prune tests + 1 note test in `ledger_test.go`, 2 retention validation tests in `config_test.go`, updated wizard test
+
+## New Files (1)
+
+| File | Purpose |
+|------|---------|
+| `cmd/gd/cmd_note.go` | `gd note <text>` command |
+
+## Modified Files (13)
+
+| File | Changes |
+|------|---------|
+| `pkg/context/ledger.go` | `TypeNote` constant, `PruneExpired` method, `parseTimestampFromFilename`, `notes/` in 5 slice literals |
+| `pkg/context/ledger_test.go` | 8 prune tests + 1 note test, updated directory structure test |
+| `pkg/config/config.go` | Retention validation in `Validate()` |
+| `pkg/config/config_test.go` | 2 new retention validation tests |
+| `pkg/configure/wizard.go` | Remote LLM warning with acknowledge prompt |
+| `pkg/configure/wizard_test.go` | Updated OpenRouter test to acknowledge warning |
+| `pkg/configure/session.go` | `RemoteLLMWarning` on `Change`, `hasNewRemoteProvider` check |
+| `cmd/gd/cmd_context.go` | `gd context prune` command, TypeNote in type lists |
+| `cmd/gd/cmd_daemon.go` | Retention prune after routine execution |
+| `cmd/gd/interactive.go` | Config validation warning on startup |
+| `cmd/gd/cmd_ask.go` | Config validation, contact injection |
+| `cmd/gd/cmd_init.go` | Remote LLM warning display |
+| `cmd/gd/cmd_configure.go` | Remote LLM warning display |
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 19 packages pass
+- [x] `go test -race ./...` — no races

@@ -164,6 +164,17 @@
 - This violates the "All file I/O under ~/.burrow/" invariant
 - Fix: accept the path as a parameter from callers that already have it, or propagate the error
 
+## Inject time for deterministic pruning/expiry tests
+- `PruneExpired(retention, now)` accepts `now time.Time` instead of calling `time.Now()` internally
+- Allows testing exact boundary conditions (29 days = keep, 31 days = prune) without depending on wall clock
+- Follows the same pattern as the scheduler's `Clock` interface
+- Callers in production pass `time.Now()` — trivial
+
+## Zero-value ambiguity in YAML config
+- YAML unmarshals missing int fields to 0, so `raw_results: 0` (explicit disable) and missing `raw_results` (not configured) are indistinguishable
+- When applying defaults, use the config struct directly when a config file exists; only apply defaults when NO config file exists at all
+- Don't overlay defaults with `if value > 0` checks — this silently overrides explicit zeros
+
 ## Tests must not depend on system timezone
 - `time.Local` varies by machine (e.g., AKST = UTC-9 on this machine)
 - `time.Date(2025, 1, 15, 5, 1, 0, 0, time.UTC)` converted to AKST gives Jan 14, not Jan 15

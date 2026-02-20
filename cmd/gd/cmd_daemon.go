@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
@@ -129,5 +130,15 @@ func runRoutine(ctx context.Context, burrowDir string, routine *pipeline.Routine
 	}
 
 	fmt.Fprintf(os.Stderr, "report generated: %s\n", report.Dir)
+
+	// Prune expired context entries after successful routine execution.
+	if ledger != nil {
+		if pruned, err := ledger.PruneExpired(cfg.Context.Retention, time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: retention prune: %v\n", err)
+		} else if pruned > 0 {
+			fmt.Fprintf(os.Stderr, "retention: pruned %d expired entry(ies)\n", pruned)
+		}
+	}
+
 	return nil
 }

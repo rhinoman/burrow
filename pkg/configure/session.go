@@ -18,9 +18,10 @@ type Message struct {
 
 // Change represents a proposed configuration change.
 type Change struct {
-	Description string
-	Config      *config.Config
-	Raw         string // The YAML block from LLM output
+	Description      string
+	Config           *config.Config
+	Raw              string // The YAML block from LLM output
+	RemoteLLMWarning bool   // Set by ApplyChange when a new remote provider is added
 }
 
 // Session provides LLM-driven conversational configuration.
@@ -185,11 +186,36 @@ func (s *Session) ApplyChange(change *Change) error {
 	if err := config.Validate(change.Config); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
+
+	// Spec §4.2: warn when a remote LLM provider is being added.
+	if hasNewRemoteProvider(s.cfg, change.Config) {
+		change.RemoteLLMWarning = true
+	}
+
 	if err := config.Save(s.burrowDir, change.Config); err != nil {
 		return fmt.Errorf("saving configuration: %w", err)
 	}
 	s.cfg = change.Config
 	return nil
+}
+
+// hasNewRemoteProvider checks if the proposed config introduces a remote LLM
+// provider that wasn't in the current config.
+func hasNewRemoteProvider(current, proposed *config.Config) bool {
+	existing := make(map[string]bool)
+	if current != nil {
+		for _, p := range current.LLM.Providers {
+			if p.Privacy == "remote" {
+				existing[p.Name] = true
+			}
+		}
+	}
+	for _, p := range proposed.LLM.Providers {
+		if p.Privacy == "remote" && !existing[p.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 // redactConfig returns a deep copy of the config with credential fields replaced

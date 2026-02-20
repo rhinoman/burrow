@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
@@ -19,9 +20,10 @@ func init() {
 	contextCmd.AddCommand(contextShowCmd)
 	contextCmd.AddCommand(contextStatsCmd)
 	contextCmd.AddCommand(contextClearCmd)
+	contextCmd.AddCommand(contextPruneCmd)
 
 	contextShowCmd.Flags().IntVarP(&contextShowLimit, "limit", "n", 20, "number of entries to show")
-	contextShowCmd.Flags().StringVar(&contextShowType, "type", "", "filter by type: report, result, or session")
+	contextShowCmd.Flags().StringVar(&contextShowType, "type", "", "filter by type: report, result, session, contact, or note")
 }
 
 var (
@@ -78,13 +80,13 @@ var contextShowCmd = &cobra.Command{
 			return err
 		}
 
-		types := []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact}
+		types := []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact, bcontext.TypeNote}
 		if contextShowType != "" {
 			switch contextShowType {
-			case bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact:
+			case bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact, bcontext.TypeNote:
 				types = []string{contextShowType}
 			default:
-				return fmt.Errorf("unknown type %q (use report, result, session, or contact)", contextShowType)
+				return fmt.Errorf("unknown type %q (use report, result, session, contact, or note)", contextShowType)
 			}
 		}
 
@@ -144,7 +146,7 @@ var contextStatsCmd = &cobra.Command{
 		fmt.Printf("  %-10s  %5s  %10s  %-12s  %-12s\n", "Type", "Count", "Size", "Earliest", "Latest")
 		fmt.Printf("  %-10s  %5s  %10s  %-12s  %-12s\n", "----", "-----", "----", "--------", "------")
 
-		for _, entryType := range []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact} {
+		for _, entryType := range []string{bcontext.TypeReport, bcontext.TypeResult, bcontext.TypeSession, bcontext.TypeContact, bcontext.TypeNote} {
 			ts, ok := stats[entryType]
 			if !ok {
 				continue
@@ -179,7 +181,7 @@ var contextClearCmd = &cobra.Command{
 			return nil
 		}
 
-		for _, sub := range []string{"reports", "results", "sessions", "contacts"} {
+		for _, sub := range []string{"reports", "results", "sessions", "contacts", "notes"} {
 			dir := filepath.Join(contextDir, sub)
 			if err := os.RemoveAll(dir); err != nil {
 				return fmt.Errorf("removing %s: %w", sub, err)
@@ -190,6 +192,53 @@ var contextClearCmd = &cobra.Command{
 		}
 
 		fmt.Println("Context ledger cleared.")
+		return nil
+	},
+}
+
+var contextPruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Delete expired context entries based on retention settings",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		burrowDir, err := config.BurrowDir()
+		if err != nil {
+			return err
+		}
+
+		ledger, err := openLedger()
+		if err != nil {
+			return err
+		}
+
+		// Load retention config. Use config values directly when available;
+		// fall back to sensible defaults only when no config exists at all.
+		var retention config.RetentionConfig
+		cfg, cfgErr := config.Load(burrowDir)
+		if cfgErr == nil {
+			retention = cfg.Context.Retention
+			// Fill in defaults for the reports field only (empty means "forever").
+			if retention.Reports == "" {
+				retention.Reports = "forever"
+			}
+		} else {
+			// No config file — use defaults.
+			retention = config.RetentionConfig{
+				Reports:    "forever",
+				RawResults: 90,
+				Sessions:   30,
+			}
+		}
+
+		pruned, err := ledger.PruneExpired(retention, time.Now())
+		if err != nil {
+			return fmt.Errorf("pruning context: %w", err)
+		}
+
+		if pruned == 0 {
+			fmt.Println("No expired entries found.")
+		} else {
+			fmt.Printf("Pruned %d expired entry(ies).\n", pruned)
+		}
 		return nil
 	},
 }

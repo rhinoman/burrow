@@ -76,8 +76,8 @@ func TestWizardRunInitWithService(t *testing.T) {
 }
 
 func TestWizardRunInitOpenRouter(t *testing.T) {
-	// Choose OpenRouter, skip service, skip privacy, accept app defaults
-	input := "2\n${OPENROUTER_KEY}\nopenai/gpt-4\n\nn\ny\n\n\n"
+	// Choose OpenRouter, acknowledge remote warning, skip service, accept privacy, accept app defaults
+	input := "2\n${OPENROUTER_KEY}\nopenai/gpt-4\n\ny\nn\ny\n\n\n"
 	r := strings.NewReader(input)
 	var out bytes.Buffer
 
@@ -95,6 +95,9 @@ func TestWizardRunInitOpenRouter(t *testing.T) {
 	}
 	if cfg.LLM.Providers[0].APIKey != "${OPENROUTER_KEY}" {
 		t.Errorf("expected ${OPENROUTER_KEY}, got %q", cfg.LLM.Providers[0].APIKey)
+	}
+	if !cfg.Privacy.StripAttributionForRemote {
+		t.Error("expected strip_attribution_for_remote auto-enabled for remote provider")
 	}
 }
 

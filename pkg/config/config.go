@@ -285,6 +285,17 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	// Validate retention config
+	if cfg.Context.Retention.RawResults < 0 {
+		return fmt.Errorf("context.retention.raw_results must be non-negative, got %d", cfg.Context.Retention.RawResults)
+	}
+	if cfg.Context.Retention.Sessions < 0 {
+		return fmt.Errorf("context.retention.sessions must be non-negative, got %d", cfg.Context.Retention.Sessions)
+	}
+	if cfg.Context.Retention.Reports != "" && cfg.Context.Retention.Reports != "forever" {
+		return fmt.Errorf("context.retention.reports must be empty or \"forever\", got %q", cfg.Context.Retention.Reports)
+	}
+
 	if cfg.Rendering.Images != "" {
 		switch strings.ToLower(cfg.Rendering.Images) {
 		case "auto", "inline", "external", "text":

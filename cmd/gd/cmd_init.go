@@ -123,6 +123,13 @@ func runConversationalInit(ctx context.Context, session *configure.Session) (*co
 				if err := session.ApplyChange(change); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error applying: %v\n", err)
 				} else {
+					if change.RemoteLLMWarning {
+						fmt.Println()
+						fmt.Println("  ⚠ This configuration includes a remote LLM provider.")
+						fmt.Println("    Collected results will leave your machine during synthesis.")
+						fmt.Println("    For maximum privacy, use a local LLM provider.")
+						fmt.Println()
+					}
 					fmt.Println("  Configuration updated.")
 					appliedConfig = change.Config
 				}

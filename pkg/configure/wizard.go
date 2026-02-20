@@ -135,6 +135,18 @@ func (w *Wizard) configureLLM(cfg *config.Config) error {
 		if strings.TrimSpace(name) == "" {
 			name = "cloud/" + model
 		}
+
+		// Spec §4.2: warn users when first configuring a remote LLM provider.
+		w.print(fmt.Sprintf("\n  ⚠ LLM provider '%s' sends synthesis data\n", strings.TrimSpace(name)))
+		w.print("    to openrouter.ai. Collected results will leave your\n")
+		w.print("    machine during synthesis.\n\n")
+		w.print("    For maximum privacy, use a local LLM provider.\n\n")
+		ack := w.prompt("  Acknowledge and continue? [y/N]: ")
+		if strings.ToLower(strings.TrimSpace(ack)) != "y" {
+			w.print("  Remote provider not added.\n")
+			break
+		}
+
 		cfg.LLM.Providers = append(cfg.LLM.Providers, config.ProviderConfig{
 			Name:    strings.TrimSpace(name),
 			Type:    "openrouter",
@@ -142,6 +154,7 @@ func (w *Wizard) configureLLM(cfg *config.Config) error {
 			Model:   model,
 			Privacy: "remote",
 		})
+		cfg.Privacy.StripAttributionForRemote = true
 
 	case "3", "":
 		cfg.LLM.Providers = append(cfg.LLM.Providers, config.ProviderConfig{

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jcadam/burrow/pkg/config"
 )
 
 func TestAppendAndSearch(t *testing.T) {
@@ -315,9 +317,264 @@ func TestDirectoryStructure(t *testing.T) {
 		t.Fatalf("NewLedger: %v", err)
 	}
 
-	for _, sub := range []string{"reports", "results", "sessions"} {
+	for _, sub := range []string{"reports", "results", "sessions", "contacts", "notes"} {
 		if _, err := os.Stat(filepath.Join(dir, sub)); os.IsNotExist(err) {
 			t.Errorf("expected %s directory to exist", sub)
 		}
+	}
+}
+
+func TestPruneExpiredSessions(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	// Create an old session (100 days ago) and a recent one (1 day ago).
+	oldTS := time.Now().UTC().AddDate(0, 0, -100)
+	newTS := time.Now().UTC().AddDate(0, 0, -1)
+
+	l.Append(Entry{Type: TypeSession, Label: "Old Session", Timestamp: oldTS, Content: "old"})
+	l.Append(Entry{Type: TypeSession, Label: "New Session", Timestamp: newTS, Content: "new"})
+
+	retention := config.RetentionConfig{Sessions: 30, RawResults: 90, Reports: "forever"}
+	pruned, err := l.PruneExpired(retention, time.Now())
+	if err != nil {
+		t.Fatalf("PruneExpired: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("expected 1 pruned, got %d", pruned)
+	}
+
+	// Only the new session should remain.
+	entries, err := l.List(TypeSession, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 remaining session, got %d", len(entries))
+	}
+	if entries[0].Label != "New Session" {
+		t.Errorf("expected 'New Session', got %q", entries[0].Label)
+	}
+}
+
+func TestPruneExpiredRawResults(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -100)
+	l.Append(Entry{Type: TypeResult, Label: "Old Result", Timestamp: oldTS, Content: "old data"})
+	l.Append(Entry{Type: TypeResult, Label: "Recent Result", Timestamp: time.Now().UTC(), Content: "recent"})
+
+	retention := config.RetentionConfig{RawResults: 90, Sessions: 30, Reports: "forever"}
+	pruned, err := l.PruneExpired(retention, time.Now())
+	if err != nil {
+		t.Fatalf("PruneExpired: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("expected 1 pruned, got %d", pruned)
+	}
+
+	entries, err := l.List(TypeResult, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 remaining result, got %d", len(entries))
+	}
+}
+
+func TestPruneExpiredReportsForever(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -365)
+	l.Append(Entry{Type: TypeReport, Label: "Ancient Report", Timestamp: oldTS, Content: "ancient"})
+
+	retention := config.RetentionConfig{Reports: "forever", RawResults: 90, Sessions: 30}
+	pruned, err := l.PruneExpired(retention, time.Now())
+	if err != nil {
+		t.Fatalf("PruneExpired: %v", err)
+	}
+	if pruned != 0 {
+		t.Errorf("expected 0 pruned (reports=forever), got %d", pruned)
+	}
+
+	entries, err := l.List(TypeReport, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 report preserved, got %d", len(entries))
+	}
+}
+
+func TestPruneExpiredSkipsContacts(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -365)
+	l.Append(Entry{Type: TypeContact, Label: "Old Contact", Timestamp: oldTS, Content: "contact info"})
+
+	retention := config.RetentionConfig{RawResults: 1, Sessions: 1, Reports: "forever"}
+	pruned, err := l.PruneExpired(retention, time.Now())
+	if err != nil {
+		t.Fatalf("PruneExpired: %v", err)
+	}
+	if pruned != 0 {
+		t.Errorf("expected 0 pruned (contacts are never pruned), got %d", pruned)
+	}
+}
+
+func TestPruneExpiredSkipsNotes(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -365)
+	l.Append(Entry{Type: TypeNote, Label: "Old Note", Timestamp: oldTS, Content: "note content"})
+
+	retention := config.RetentionConfig{RawResults: 1, Sessions: 1, Reports: "forever"}
+	pruned, err := l.PruneExpired(retention, time.Now())
+	if err != nil {
+		t.Fatalf("PruneExpired: %v", err)
+	}
+	if pruned != 0 {
+		t.Errorf("expected 0 pruned (notes are never pruned), got %d", pruned)
+	}
+
+	entries, err := l.List(TypeNote, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 note preserved, got %d", len(entries))
+	}
+}
+
+func TestPruneExpiredZeroDays(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -365)
+	l.Append(Entry{Type: TypeResult, Label: "Result", Timestamp: oldTS, Content: "old"})
+	l.Append(Entry{Type: TypeSession, Label: "Session", Timestamp: oldTS, Content: "old"})
+
+	// Zero means no pruning for that type.
+	retention := config.RetentionConfig{RawResults: 0, Sessions: 0, Reports: "forever"}
+	pruned, err := l.PruneExpired(retention, time.Now())
+	if err != nil {
+		t.Fatalf("PruneExpired: %v", err)
+	}
+	if pruned != 0 {
+		t.Errorf("expected 0 pruned (0 days = no pruning), got %d", pruned)
+	}
+}
+
+func TestPruneExpiredNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	oldTS := time.Now().UTC().AddDate(0, 0, -365)
+	l.Append(Entry{Type: TypeResult, Label: "Result", Timestamp: oldTS, Content: "old"})
+
+	// Empty retention config — all zeros/empty = no pruning.
+	retention := config.RetentionConfig{}
+	pruned, err := l.PruneExpired(retention, time.Now())
+	if err != nil {
+		t.Fatalf("PruneExpired: %v", err)
+	}
+	if pruned != 0 {
+		t.Errorf("expected 0 pruned (empty config = no pruning), got %d", pruned)
+	}
+}
+
+func TestPruneExpiredBoundary(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	// Create an entry at a known timestamp.
+	entryTS := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	l.Append(Entry{Type: TypeResult, Label: "Boundary", Timestamp: entryTS, Content: "data"})
+
+	retention := config.RetentionConfig{RawResults: 30}
+
+	// At 29 days after: entry is 29 days old, retention is 30 — should NOT be pruned.
+	now29 := entryTS.AddDate(0, 0, 29)
+	pruned, err := l.PruneExpired(retention, now29)
+	if err != nil {
+		t.Fatalf("PruneExpired at 29 days: %v", err)
+	}
+	if pruned != 0 {
+		t.Error("expected entry to survive at 29 days (within 30-day retention)")
+	}
+
+	// At 31 days after: entry is 31 days old, retention is 30 — should be pruned.
+	now31 := entryTS.AddDate(0, 0, 31)
+	pruned, err = l.PruneExpired(retention, now31)
+	if err != nil {
+		t.Fatalf("PruneExpired at 31 days: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("expected entry pruned at 31 days, got %d", pruned)
+	}
+}
+
+func TestNoteEntry(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir)
+	if err != nil {
+		t.Fatalf("NewLedger: %v", err)
+	}
+
+	ts := time.Now().UTC()
+	l.Append(Entry{
+		Type:      TypeNote,
+		Label:     "Note",
+		Timestamp: ts,
+		Content:   "Met with CISA team, discussed Phase 2 timeline",
+	})
+
+	// Should be searchable.
+	results, err := l.Search("CISA")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Type != TypeNote {
+		t.Errorf("expected type %q, got %q", TypeNote, results[0].Type)
+	}
+
+	// Should appear in GatherContext.
+	ctx, err := l.GatherContext(10000)
+	if err != nil {
+		t.Fatalf("GatherContext: %v", err)
+	}
+	if !strings.Contains(ctx, "CISA") {
+		t.Error("expected note content in gathered context")
 	}
 }

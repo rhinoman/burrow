@@ -496,3 +496,63 @@ func TestBurrowDir(t *testing.T) {
 		t.Error("expected directory to be created")
 	}
 }
+
+func TestValidateRetentionNegativeDays(t *testing.T) {
+	cfg := &Config{
+		Context: ContextConfig{
+			Retention: RetentionConfig{RawResults: -1},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for negative raw_results")
+	}
+	if !strings.Contains(err.Error(), "non-negative") {
+		t.Errorf("expected non-negative error, got: %v", err)
+	}
+
+	cfg2 := &Config{
+		Context: ContextConfig{
+			Retention: RetentionConfig{Sessions: -5},
+		},
+	}
+	err = Validate(cfg2)
+	if err == nil {
+		t.Fatal("expected validation error for negative sessions")
+	}
+}
+
+func TestValidateRetentionInvalidReports(t *testing.T) {
+	cfg := &Config{
+		Context: ContextConfig{
+			Retention: RetentionConfig{Reports: "30"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for non-'forever' reports string")
+	}
+	if !strings.Contains(err.Error(), "forever") {
+		t.Errorf("expected 'forever' in error, got: %v", err)
+	}
+
+	// "forever" should be valid
+	cfg2 := &Config{
+		Context: ContextConfig{
+			Retention: RetentionConfig{Reports: "forever"},
+		},
+	}
+	if err := Validate(cfg2); err != nil {
+		t.Fatalf("reports='forever' should be valid: %v", err)
+	}
+
+	// Empty string should also be valid
+	cfg3 := &Config{
+		Context: ContextConfig{
+			Retention: RetentionConfig{Reports: ""},
+		},
+	}
+	if err := Validate(cfg3); err != nil {
+		t.Fatalf("reports='' should be valid: %v", err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jcadam/burrow/pkg/config"
 	"github.com/jcadam/burrow/pkg/slug"
 )
 
@@ -21,12 +22,13 @@ const (
 	TypeResult  = "result"
 	TypeSession = "session"
 	TypeContact = "contact"
+	TypeNote    = "note"
 )
 
 // Entry is a single item in the context ledger.
 type Entry struct {
 	ID        string
-	Type      string // report | result | session | contact
+	Type      string // report | result | session | contact | note
 	Label     string
 	Routine   string
 	Timestamp time.Time
@@ -41,7 +43,7 @@ type Ledger struct {
 
 // NewLedger creates a ledger rooted at the given directory.
 func NewLedger(root string) (*Ledger, error) {
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s", TypeNote + "s"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return nil, fmt.Errorf("creating context directory %s: %w", sub, err)
 		}
@@ -91,7 +93,7 @@ func (l *Ledger) Search(query string) ([]Entry, error) {
 	query = strings.ToLower(query)
 	var entries []Entry
 
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s", TypeNote + "s"} {
 		dir := filepath.Join(l.root, sub)
 		files, err := os.ReadDir(dir)
 		if err != nil {
@@ -162,7 +164,7 @@ func (l *Ledger) List(entryType string, limit int) ([]Entry, error) {
 func (l *Ledger) GatherContext(maxBytes int) (string, error) {
 	var all []Entry
 
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s", TypeNote + "s"} {
 		dir := filepath.Join(l.root, sub)
 		files, err := os.ReadDir(dir)
 		if err != nil {
@@ -211,7 +213,7 @@ type TypeStats struct {
 func (l *Ledger) Stats() (map[string]TypeStats, error) {
 	stats := make(map[string]TypeStats)
 
-	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s"} {
+	for _, sub := range []string{TypeReport + "s", TypeResult + "s", TypeSession + "s", TypeContact + "s", TypeNote + "s"} {
 		entryType := strings.TrimSuffix(sub, "s")
 		dir := filepath.Join(l.root, sub)
 		files, err := os.ReadDir(dir)
@@ -316,5 +318,80 @@ func parseEntry(raw, filename, subdir string) Entry {
 	}
 
 	return e
+}
+
+// PruneExpired deletes context entries older than the retention limits.
+// Results are pruned by RawResults (days), sessions by Sessions (days).
+// Reports are pruned only when Reports is a valid integer of days (currently
+// only "forever" or "" is valid, meaning reports are never pruned).
+// Contacts and notes are never pruned.
+// Returns the count of deleted files.
+func (l *Ledger) PruneExpired(retention config.RetentionConfig, now time.Time) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	deleted := 0
+
+	type pruneTarget struct {
+		subdir string
+		days   int
+	}
+
+	targets := []pruneTarget{
+		{TypeResult + "s", retention.RawResults},
+		{TypeSession + "s", retention.Sessions},
+	}
+
+	// Reports: only "forever" or "" is valid — never pruned.
+
+	for _, target := range targets {
+		if target.days <= 0 {
+			continue // 0 means no pruning for this type
+		}
+		cutoff := now.AddDate(0, 0, -target.days)
+		dir := filepath.Join(l.root, target.subdir)
+
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return deleted, fmt.Errorf("reading %s: %w", target.subdir, err)
+		}
+
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
+				continue
+			}
+			ts, ok := parseTimestampFromFilename(f.Name())
+			if !ok {
+				continue
+			}
+			if ts.Before(cutoff) {
+				path := filepath.Join(dir, f.Name())
+				if err := os.Remove(path); err != nil {
+					return deleted, fmt.Errorf("removing %s: %w", f.Name(), err)
+				}
+				deleted++
+			}
+		}
+	}
+
+	return deleted, nil
+}
+
+// parseTimestampFromFilename extracts a timestamp from the filename prefix
+// format "2006-01-02T150405-...".
+func parseTimestampFromFilename(name string) (time.Time, bool) {
+	// The timestamp prefix is 17 characters: "2006-01-02T150405"
+	if len(name) < 17 {
+		return time.Time{}, false
+	}
+	prefix := name[:17]
+	t, err := time.Parse("2006-01-02T150405", prefix)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 

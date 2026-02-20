@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/contacts"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	"github.com/jcadam/burrow/pkg/render"
 	"github.com/jcadam/burrow/pkg/synthesis"
@@ -45,12 +46,19 @@ var askCmd = &cobra.Command{
 		cfg, cfgErr := config.Load(burrowDir)
 		if cfgErr == nil {
 			config.ResolveEnvVars(cfg)
+			if err := config.Validate(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: config issue: %v\n", err)
+			}
 		}
+
+		// Open contacts store for context injection
+		contactsDir := filepath.Join(burrowDir, "contacts")
+		contactStore, _ := contacts.NewStore(contactsDir)
 
 		// Find local LLM provider (spec: zero network requests for gd ask)
 		provider := findLocalProvider(cfg)
 		if provider != nil {
-			return askWithLLM(cmd, provider, ledger, query)
+			return askWithLLM(cmd, provider, ledger, contactStore, query)
 		}
 
 		// Fallback to text search
@@ -81,10 +89,17 @@ func findLocalProvider(cfg *config.Config) synthesis.Provider {
 }
 
 // askWithLLM gathers context and queries a local LLM for a reasoned answer.
-func askWithLLM(cmd *cobra.Command, provider synthesis.Provider, ledger *bcontext.Ledger, query string) error {
+func askWithLLM(cmd *cobra.Command, provider synthesis.Provider, ledger *bcontext.Ledger, contactStore *contacts.Store, query string) error {
 	contextData, err := ledger.GatherContext(100_000)
 	if err != nil {
 		return fmt.Errorf("gathering context: %w", err)
+	}
+
+	// Inject contacts into context (mirrors interactive mode behavior).
+	if contactStore != nil {
+		if cc := contactStore.ForContext(); cc != "" {
+			contextData += "\n" + cc
+		}
 	}
 
 	if contextData == "" {

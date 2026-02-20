@@ -45,6 +45,10 @@ func runInteractive(ctx context.Context) error {
 	}
 	config.ResolveEnvVars(cfg)
 
+	if err := config.Validate(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: config issue: %v\n", err)
+	}
+
 	// Build registry
 	registry, err := buildRegistry(cfg, burrowDir)
 	if err != nil {
