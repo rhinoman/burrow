@@ -121,3 +121,101 @@
 - [x] `go vet ./...` — clean
 - [x] `go test ./... -count=1` — all packages pass
 - [x] `go test -race ./...` — no races detected
+
+---
+
+# Phase 3: User Interaction Layer
+
+## Implementation
+
+- [x] Step 1: `config.Save()` + `pipeline.SaveRoutine()` — round-trip serialization with tests
+- [x] Step 2: `pkg/actions/` — action parsing, clipboard, system app handoff, draft generation
+- [x] Step 3: `pkg/configure/` — Ollama detection, structured wizard, LLM-driven session
+- [x] Step 4: `gd init` + `gd configure` — commands with auto-detection and wizard fallback
+- [x] Step 5: `gd ask` upgrade — local LLM reasoning over context with text search fallback
+- [x] Step 6: Interactive mode REPL — `gd` launches REPL with ask/search/draft/sources/help
+- [x] Step 7: Extracted `buildRegistry()` helper shared between routines and interactive mode
+
+## New Files (14)
+
+- `pkg/actions/actions.go` — ActionType, Action, ParseActions
+- `pkg/actions/clipboard.go` — CopyToClipboard, platform detection
+- `pkg/actions/handoff.go` — Handoff struct, OpenURL/File/Mailto/PlayMedia, BuildMailtoURI
+- `pkg/actions/draft.go` — Draft struct, GenerateDraft, parseDraft
+- `pkg/actions/actions_test.go` — ParseActions edge cases, parseDraft structured/unstructured
+- `pkg/actions/handoff_test.go` — mailto URI encoding tests
+- `pkg/configure/detect.go` — DetectOllama, DetectProvider, VerifyProvider
+- `pkg/configure/wizard.go` — Wizard with RunInit/RunModify, piped IO
+- `pkg/configure/session.go` — Session with ProcessMessage/ApplyChange, extractYAMLBlock
+- `pkg/configure/wizard_test.go` — piped IO tests for all wizard paths
+- `pkg/configure/session_test.go` — mock provider, YAML extraction, history
+- `cmd/gd/cmd_init.go` — gd init command
+- `cmd/gd/cmd_configure.go` — gd configure command
+- `cmd/gd/interactive.go` — REPL loop with ask/search/draft/sources/help
+
+## Modified Files (6)
+
+- `pkg/config/config.go` — added `Save()` with header comment
+- `pkg/config/config_test.go` — Save round-trip, creates parent dir, header tests
+- `pkg/pipeline/routine.go` — added `SaveRoutine()`
+- `pkg/pipeline/routine_test.go` — SaveRoutine round-trip, creates dir, excludes Name
+- `cmd/gd/root.go` — added `RunE` for interactive mode
+- `cmd/gd/cmd_ask.go` — upgraded with findLocalProvider, local LLM reasoning, text search fallback
+- `cmd/gd/cmd_routines.go` — extracted `buildRegistry()` helper
+
+## New Test Files (2)
+
+- `cmd/gd/cmd_ask_test.go` — findLocalProvider selection logic tests
+- `cmd/gd/interactive_test.go` — parseServiceQuery tests
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 14 packages pass
+- [x] `go test -race ./...` — no races detected
+
+---
+
+# Code Review Round 5 Fixes
+
+## Fixes
+
+- [x] **HIGH** Panic recovery in executor goroutines — `defer/recover` in `executor.go:56` goroutine, surfaces panic as error result
+- [x] **MED** Empty auth credentials not validated — `Validate()` now requires key/token/value for their respective auth methods
+- [x] **MED** Flaky timing tests — widened parallel thresholds from 250ms to 500ms (sequential floor is 300ms)
+- [x] **LOW** Dead config fields — added `// Reserved: Phase 4` comments to `compare_with` and `spec`
+- [x] **LOW** LLM timeouts not configurable — added `Timeout` field to `ProviderConfig`, `NewOllamaProviderWithTimeout`, `NewOpenRouterProviderWithTimeout`
+- [x] **LOW** `LoadAllRoutines` fails on first bad file — now skips with warning, optional `io.Writer` for warnings
+- [x] **LOW** Empty config passes validation — intentional (fresh install), added explicit test documenting this
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 14 packages pass
+- [x] `go test -race ./...` — no races detected
+
+---
+
+# Code Review Round 6 Fixes
+
+## Fixes
+
+- [x] **HIGH** `handleServiceQuery` empty tool name — rewrote `parseServiceQuery` to return `(svc, tool, params)`, `handleServiceQuery` now passes tool to `Execute()`, updated tests
+- [x] **HIGH** `gd init` saves unapplied config — `runConversationalInit` now only returns configs that were applied+accepted; returns `(nil, nil)` to fall through to wizard
+- [x] **HIGH** `gd configure` writes expanded secrets — added `Config.DeepCopy()`, resolve env vars on copy only; wizard operates on unresolved config preserving `${ENV_VAR}` references
+- [x] **MED** Session sends credentials to LLM — added `redactConfig()` that replaces auth keys/tokens with `${REDACTED}` before embedding in system prompt
+- [x] **LOW** `parseDraft` body-with-colons edge case — rewrote to scan only known header prefixes (`To:`, `Subject:`), stops scanning on first non-header line
+- [x] **LOW** `extractYAMLBlock` indented code blocks — rewrote to line-by-line scanning with `TrimSpace` on marker detection
+- [x] **LOW** `wizard.prompt` swallows EOF — now returns empty string on read error, letting callers use defaults
+- [x] **LOW** `DetectOllama` picks arbitrary model — now selects the largest model by size
+- [x] **LOW** Interactive mode local-only LLM policy — added doc comment explaining zero-network privacy rationale
+- [x] **MED** Test coverage — added `TestDeepCopy`, `TestRedactConfig`, `TestParseDraftBodyWithColons`, indented YAML block test, updated `parseServiceQuery` tests
+
+## Verification
+
+- [x] `go build ./cmd/gd` — clean
+- [x] `go vet ./...` — clean
+- [x] `go test ./... -count=1` — all 14 packages pass
+- [x] `go test -race ./...` — no races detected

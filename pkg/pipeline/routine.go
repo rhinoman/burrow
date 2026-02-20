@@ -3,6 +3,7 @@ package pipeline
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +29,7 @@ type ReportConfig struct {
 	Style          string `yaml:"style,omitempty"`
 	GenerateCharts bool   `yaml:"generate_charts,omitempty"`
 	MaxLength      int    `yaml:"max_length,omitempty"`
-	CompareWith    string `yaml:"compare_with,omitempty"`
+	CompareWith    string `yaml:"compare_with,omitempty"` // Reserved: report comparison (Phase 4)
 }
 
 // SynthesisConfig holds the LLM system prompt for synthesis.
@@ -68,13 +69,20 @@ func LoadRoutine(path string) (*Routine, error) {
 }
 
 // LoadAllRoutines loads all .yaml files from a directory.
-func LoadAllRoutines(dir string) ([]*Routine, error) {
+// Invalid routine files are skipped with a warning to warnWriter (if non-nil).
+// Use nil for warnWriter to discard warnings.
+func LoadAllRoutines(dir string, warnWriter ...io.Writer) ([]*Routine, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("listing routines: %w", err)
+	}
+
+	var w io.Writer
+	if len(warnWriter) > 0 && warnWriter[0] != nil {
+		w = warnWriter[0]
 	}
 
 	var routines []*Routine
@@ -84,12 +92,31 @@ func LoadAllRoutines(dir string) ([]*Routine, error) {
 		}
 		r, err := LoadRoutine(filepath.Join(dir, e.Name()))
 		if err != nil {
-			return nil, err
+			if w != nil {
+				fmt.Fprintf(w, "warning: skipping %s: %v\n", e.Name(), err)
+			}
+			continue
 		}
 		routines = append(routines, r)
 	}
 
 	return routines, nil
+}
+
+// SaveRoutine marshals a routine to YAML and writes it to the routines directory.
+// The Name field is excluded (yaml:"-") since it's derived from the filename.
+func SaveRoutine(routinesDir string, r *Routine) error {
+	if err := os.MkdirAll(routinesDir, 0o755); err != nil {
+		return fmt.Errorf("creating routines directory: %w", err)
+	}
+
+	data, err := yaml.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshaling routine: %w", err)
+	}
+
+	path := filepath.Join(routinesDir, r.Name+".yaml")
+	return os.WriteFile(path, data, 0o644)
 }
 
 func validateRoutine(r *Routine) error {

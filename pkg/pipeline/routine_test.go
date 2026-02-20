@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -125,6 +126,97 @@ func TestLoadAllRoutines(t *testing.T) {
 	}
 }
 
+func TestSaveRoutineRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	original := &Routine{
+		Name:     "test-routine",
+		Schedule: "06:00",
+		Timezone: "America/New_York",
+		Jitter:   120,
+		LLM:      "local/test",
+		Report: ReportConfig{
+			Title: "Test Report",
+			Style: "executive_summary",
+		},
+		Synthesis: SynthesisConfig{
+			System: "You are a test analyst.",
+		},
+		Sources: []SourceConfig{
+			{
+				Service:      "test-svc",
+				Tool:         "search",
+				Params:       map[string]string{"q": "test"},
+				ContextLabel: "Test Results",
+			},
+		},
+	}
+
+	if err := SaveRoutine(dir, original); err != nil {
+		t.Fatalf("SaveRoutine: %v", err)
+	}
+
+	loaded, err := LoadRoutine(filepath.Join(dir, "test-routine.yaml"))
+	if err != nil {
+		t.Fatalf("LoadRoutine after Save: %v", err)
+	}
+
+	if loaded.Name != "test-routine" {
+		t.Errorf("name: got %q, want test-routine", loaded.Name)
+	}
+	if loaded.Schedule != "06:00" {
+		t.Errorf("schedule: got %q, want 06:00", loaded.Schedule)
+	}
+	if loaded.Report.Title != "Test Report" {
+		t.Errorf("title: got %q, want Test Report", loaded.Report.Title)
+	}
+	if len(loaded.Sources) != 1 || loaded.Sources[0].Service != "test-svc" {
+		t.Errorf("sources round-trip failed: %+v", loaded.Sources)
+	}
+}
+
+func TestSaveRoutineCreatesDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "routines")
+
+	r := &Routine{
+		Name:   "test",
+		Report: ReportConfig{Title: "T"},
+		Sources: []SourceConfig{
+			{Service: "s", Tool: "t"},
+		},
+	}
+	if err := SaveRoutine(dir, r); err != nil {
+		t.Fatalf("SaveRoutine: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "test.yaml")); os.IsNotExist(err) {
+		t.Error("routine file not created")
+	}
+}
+
+func TestSaveRoutineExcludesName(t *testing.T) {
+	dir := t.TempDir()
+
+	r := &Routine{
+		Name:   "my-routine",
+		Report: ReportConfig{Title: "T"},
+		Sources: []SourceConfig{
+			{Service: "s", Tool: "t"},
+		},
+	}
+	if err := SaveRoutine(dir, r); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "my-routine.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Name field has yaml:"-" so it should not appear
+	if strings.Contains(string(data), "name: my-routine") {
+		t.Error("Name field should be excluded from YAML (yaml:\"-\")")
+	}
+}
+
 func TestLoadAllRoutinesEmpty(t *testing.T) {
 	dir := t.TempDir()
 	routines, err := LoadAllRoutines(dir)
@@ -133,5 +225,30 @@ func TestLoadAllRoutinesEmpty(t *testing.T) {
 	}
 	if len(routines) != 0 {
 		t.Errorf("expected 0 routines, got %d", len(routines))
+	}
+}
+
+func TestLoadAllRoutinesSkipsBadFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a valid routine
+	os.WriteFile(filepath.Join(dir, "good.yaml"), []byte(testRoutine), 0o644)
+
+	// Write an invalid routine (missing title and sources)
+	os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte("junk: true\n"), 0o644)
+
+	var warnings strings.Builder
+	routines, err := LoadAllRoutines(dir, &warnings)
+	if err != nil {
+		t.Fatalf("LoadAllRoutines: %v", err)
+	}
+	if len(routines) != 1 {
+		t.Errorf("expected 1 valid routine, got %d", len(routines))
+	}
+	if routines[0].Name != "good" {
+		t.Errorf("expected good routine, got %q", routines[0].Name)
+	}
+	if !strings.Contains(warnings.String(), "skipping bad.yaml") {
+		t.Errorf("expected warning about bad.yaml, got: %q", warnings.String())
 	}
 }

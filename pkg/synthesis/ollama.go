@@ -19,16 +19,26 @@ type OllamaProvider struct {
 }
 
 // NewOllamaProvider creates a provider that talks to Ollama's /api/chat endpoint.
-// Default endpoint is http://localhost:11434 if empty.
+// Default endpoint is http://localhost:11434 if empty. Default timeout is 5 minutes.
 func NewOllamaProvider(endpoint, model string) *OllamaProvider {
+	return NewOllamaProviderWithTimeout(endpoint, model, 0)
+}
+
+// NewOllamaProviderWithTimeout creates an Ollama provider with a custom timeout.
+// A timeout of 0 uses the default (5 minutes).
+func NewOllamaProviderWithTimeout(endpoint, model string, timeoutSecs int) *OllamaProvider {
 	if endpoint == "" {
 		endpoint = "http://localhost:11434"
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
+	timeout := 5 * time.Minute
+	if timeoutSecs > 0 {
+		timeout = time.Duration(timeoutSecs) * time.Second
+	}
 	return &OllamaProvider{
 		endpoint: endpoint,
 		model:    model,
-		client:   &http.Client{Timeout: 5 * time.Minute},
+		client:   &http.Client{Timeout: timeout},
 	}
 }
 

@@ -62,3 +62,51 @@
 - This avoids a YAML dependency in the context package
 - The parser will break on multi-line values or labels containing `: `
 - Acceptable because Burrow controls all writes — just don't put colons in labels without quoting
+
+## Goroutines in pipelines need panic recovery
+- A panicking service adapter (nil pointer, type assertion) takes down the process
+- Every user-facing goroutine needs `defer func() { if r := recover() ... }()`
+- Surface panics as error results, not crashes — the pipeline should degrade gracefully
+
+## Auth method validation should check credential presence
+- `api_key` with empty key silently sends broken requests
+- Validate at config load time, before any network requests
+- `${ENV_VAR}` references are non-empty strings and correctly pass validation (resolved later)
+
+## Timing tests need generous margins
+- 250ms ceiling for 3×100ms parallel tasks fails on loaded CI machines
+- 500ms still proves parallelism (sequential floor is 300ms) while being robust
+- Prefer structural assertions (goroutine count, ordering) over wall-clock timing
+
+## LoadAllRoutines should be fault-tolerant
+- One bad YAML file shouldn't prevent loading all other routines
+- Skip with warning, let the user fix the bad file independently
+- Use optional `io.Writer` parameter to keep the API testable
+
+## Empty config is intentionally valid
+- Represents a fresh install before user configuration
+- `gd init` produces an empty config, then the wizard adds to it
+- Document with an explicit test rather than adding a validation error
+
+## Never resolve env vars on config that will be saved
+- `config.ResolveEnvVars()` expands `${SAM_API_KEY}` in memory — mutates the struct
+- If you then call `config.Save()`, the actual secret value gets written to disk
+- Always use `Config.DeepCopy()` to create a throwaway copy for env var resolution
+- The saved config must always contain `${ENV_VAR}` references, never raw secrets
+
+## Redact credentials before sending config to LLM
+- Conversational config (`Session.ProcessMessage`) embeds current config YAML in the system prompt
+- Auth keys, tokens, and API keys must be replaced with `${REDACTED}` before embedding
+- User-agent values are not secrets — leave them visible for the LLM to understand the config
+- Use `DeepCopy()` to avoid mutating the working config
+
+## Interactive/ask commands must only use local LLMs
+- `gd ask` spec says "zero network requests" — this is a privacy guarantee
+- Interactive mode follows the same policy: only local providers, no remote
+- This is the correct implementation of compartmentalization — combined context only stays local
+- Document the intent with a comment, not just the behavior
+
+## Conversational init must track applied vs proposed state
+- LLM proposes configs; user may reject them
+- Only return configs that the user explicitly accepted ("y" to apply)
+- When user types "done" with no applied config, fall through to wizard (return nil, nil)

@@ -55,6 +55,16 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 		wg.Add(1)
 		go func(idx int, src SourceConfig) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results[idx] = &services.Result{
+						Service:   src.Service,
+						Tool:      src.Tool,
+						Timestamp: time.Now().UTC(),
+						Error:     fmt.Sprintf("panic: %v", r),
+					}
+				}
+			}()
 
 			// Apply jitter before executing
 			if routine.Jitter > 0 {

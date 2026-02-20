@@ -14,7 +14,7 @@ func NewProvider(cfg config.ProviderConfig) (Provider, error) {
 		if cfg.Model == "" {
 			return nil, fmt.Errorf("ollama provider %q requires a model", cfg.Name)
 		}
-		return NewOllamaProvider(cfg.Endpoint, cfg.Model), nil
+		return NewOllamaProviderWithTimeout(cfg.Endpoint, cfg.Model, cfg.Timeout), nil
 
 	case "openrouter":
 		if cfg.APIKey == "" {
@@ -23,7 +23,7 @@ func NewProvider(cfg config.ProviderConfig) (Provider, error) {
 		if cfg.Model == "" {
 			return nil, fmt.Errorf("openrouter provider %q requires a model", cfg.Name)
 		}
-		return NewOpenRouterProvider(cfg.Endpoint, cfg.APIKey, cfg.Model), nil
+		return NewOpenRouterProviderWithTimeout(cfg.Endpoint, cfg.APIKey, cfg.Model, cfg.Timeout), nil
 
 	case "passthrough", "":
 		return nil, nil

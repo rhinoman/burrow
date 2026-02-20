@@ -20,17 +20,27 @@ type OpenRouterProvider struct {
 }
 
 // NewOpenRouterProvider creates a provider for OpenRouter or any OpenAI-compatible endpoint.
-// Default endpoint is https://openrouter.ai/api/v1 if empty.
+// Default endpoint is https://openrouter.ai/api/v1 if empty. Default timeout is 2 minutes.
 func NewOpenRouterProvider(endpoint, apiKey, model string) *OpenRouterProvider {
+	return NewOpenRouterProviderWithTimeout(endpoint, apiKey, model, 0)
+}
+
+// NewOpenRouterProviderWithTimeout creates an OpenRouter provider with a custom timeout.
+// A timeout of 0 uses the default (2 minutes).
+func NewOpenRouterProviderWithTimeout(endpoint, apiKey, model string, timeoutSecs int) *OpenRouterProvider {
 	if endpoint == "" {
 		endpoint = "https://openrouter.ai/api/v1"
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
+	timeout := 2 * time.Minute
+	if timeoutSecs > 0 {
+		timeout = time.Duration(timeoutSecs) * time.Second
+	}
 	return &OpenRouterProvider{
 		endpoint: endpoint,
 		apiKey:   apiKey,
 		model:    model,
-		client:   &http.Client{Timeout: 2 * time.Minute},
+		client:   &http.Client{Timeout: timeout},
 	}
 }
 

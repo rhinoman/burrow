@@ -227,10 +227,10 @@ func TestSaveNoClobber(t *testing.T) {
 		t.Fatalf("Save 1: %v", err)
 	}
 
-	// Sleep 1 second to guarantee different second-precision timestamps
-	// (In practice, routines never run this close together, but the test
-	// should verify the guarantee.)
-	time.Sleep(1 * time.Second)
+	// Sleep to guarantee different second-precision timestamps.
+	// reports.Create uses time.Now() directly, so we need real clock separation.
+	// 1.1s covers clock granularity on all platforms.
+	time.Sleep(1100 * time.Millisecond)
 
 	r2, err := Save(dir, "daily", "# Report 2\n", nil)
 	if err != nil {

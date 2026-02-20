@@ -35,7 +35,7 @@ var routinesListCmd = &cobra.Command{
 			return err
 		}
 		routinesDir := filepath.Join(burrowDir, "routines")
-		routines, err := pipeline.LoadAllRoutines(routinesDir)
+		routines, err := pipeline.LoadAllRoutines(routinesDir, os.Stderr)
 		if err != nil {
 			return fmt.Errorf("loading routines: %w", err)
 		}
@@ -94,26 +94,10 @@ var routinesRunCmd = &cobra.Command{
 			return fmt.Errorf("loading routine: %w", err)
 		}
 
-		// Build privacy config
-		var privCfg *privacy.Config
-		if cfg.Privacy.StripReferrers || cfg.Privacy.RandomizeUserAgent || cfg.Privacy.MinimizeRequests {
-			privCfg = &privacy.Config{
-				StripReferrers:     cfg.Privacy.StripReferrers,
-				RandomizeUserAgent: cfg.Privacy.RandomizeUserAgent,
-				MinimizeRequests:   cfg.Privacy.MinimizeRequests,
-			}
-		}
-
 		// Build service registry
-		registry := services.NewRegistry()
-		for _, svcCfg := range cfg.Services {
-			if svcCfg.Type != "rest" {
-				continue // MCP not implemented yet
-			}
-			svc := bhttp.NewRESTService(svcCfg, privCfg)
-			if err := registry.Register(svc); err != nil {
-				return fmt.Errorf("registering service: %w", err)
-			}
+		registry, err := buildRegistry(cfg)
+		if err != nil {
+			return err
 		}
 
 		// Select synthesizer based on routine's LLM field
@@ -144,6 +128,30 @@ var routinesRunCmd = &cobra.Command{
 		fmt.Printf("Report generated: %s\n", report.Dir)
 		return nil
 	},
+}
+
+// buildRegistry creates a service registry from config, wiring privacy transport.
+func buildRegistry(cfg *config.Config) (*services.Registry, error) {
+	var privCfg *privacy.Config
+	if cfg.Privacy.StripReferrers || cfg.Privacy.RandomizeUserAgent || cfg.Privacy.MinimizeRequests {
+		privCfg = &privacy.Config{
+			StripReferrers:     cfg.Privacy.StripReferrers,
+			RandomizeUserAgent: cfg.Privacy.RandomizeUserAgent,
+			MinimizeRequests:   cfg.Privacy.MinimizeRequests,
+		}
+	}
+
+	registry := services.NewRegistry()
+	for _, svcCfg := range cfg.Services {
+		if svcCfg.Type != "rest" {
+			continue // MCP not implemented yet
+		}
+		svc := bhttp.NewRESTService(svcCfg, privCfg)
+		if err := registry.Register(svc); err != nil {
+			return nil, fmt.Errorf("registering service: %w", err)
+		}
+	}
+	return registry, nil
 }
 
 // buildSynthesizer creates the appropriate synthesizer based on the routine's

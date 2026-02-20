@@ -27,7 +27,7 @@ type ServiceConfig struct {
 	Type     string       `yaml:"type"` // rest | mcp
 	Endpoint string       `yaml:"endpoint"`
 	Auth     AuthConfig   `yaml:"auth"`
-	Spec     string       `yaml:"spec,omitempty"`
+	Spec     string       `yaml:"spec,omitempty"` // Reserved: OpenAPI/Swagger spec URL for auto-discovery (Phase 4)
 	Tools    []ToolConfig `yaml:"tools,omitempty"`
 	CacheTTL int          `yaml:"cache_ttl,omitempty"`
 }
@@ -70,7 +70,8 @@ type ProviderConfig struct {
 	Endpoint string `yaml:"endpoint,omitempty"`
 	APIKey   string `yaml:"api_key,omitempty"`
 	Model    string `yaml:"model,omitempty"`
-	Privacy  string `yaml:"privacy"` // local | remote
+	Privacy  string `yaml:"privacy"`          // local | remote
+	Timeout  int    `yaml:"timeout,omitempty"` // Seconds; 0 means default (Ollama: 300, OpenRouter: 120)
 }
 
 // PrivacyConfig defines privacy-related settings.
@@ -112,6 +113,20 @@ type RetentionConfig struct {
 	Reports    string `yaml:"reports,omitempty"`
 	RawResults int    `yaml:"raw_results,omitempty"`
 	Sessions   int    `yaml:"sessions,omitempty"`
+}
+
+// DeepCopy returns a deep copy of the config by round-tripping through YAML.
+func (c *Config) DeepCopy() *Config {
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		// Config was already valid YAML — this should never happen.
+		panic(fmt.Sprintf("config marshal during DeepCopy: %v", err))
+	}
+	var copy Config
+	if err := yaml.Unmarshal(data, &copy); err != nil {
+		panic(fmt.Sprintf("config unmarshal during DeepCopy: %v", err))
+	}
+	return &copy
 }
 
 // BurrowDir returns the path to the Burrow data directory (~/.burrow/),
@@ -170,6 +185,23 @@ func expandEnv(s string) string {
 	})
 }
 
+// Save marshals the config to YAML and writes it to config.yaml in the Burrow directory.
+// Creates the parent directory if it doesn't exist.
+func Save(burrowDir string, cfg *Config) error {
+	if err := os.MkdirAll(burrowDir, 0o755); err != nil {
+		return fmt.Errorf("creating burrow directory: %w", err)
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	header := "# Burrow configuration — https://github.com/jcadam/burrow\n# Edit this file directly or use: gd configure\n\n"
+	path := filepath.Join(burrowDir, "config.yaml")
+	return os.WriteFile(path, []byte(header+string(data)), 0o644)
+}
+
 // Validate checks internal consistency of the config.
 func Validate(cfg *Config) error {
 	names := make(map[string]bool)
@@ -196,8 +228,20 @@ func Validate(cfg *Config) error {
 		}
 
 		switch svc.Auth.Method {
-		case "api_key", "api_key_header", "bearer", "user_agent", "none", "":
-			// valid
+		case "api_key", "api_key_header":
+			if svc.Auth.Key == "" {
+				return fmt.Errorf("service %q auth method %q requires a key", svc.Name, svc.Auth.Method)
+			}
+		case "bearer":
+			if svc.Auth.Token == "" {
+				return fmt.Errorf("service %q auth method \"bearer\" requires a token", svc.Name)
+			}
+		case "user_agent":
+			if svc.Auth.Value == "" {
+				return fmt.Errorf("service %q auth method \"user_agent\" requires a value", svc.Name)
+			}
+		case "none", "":
+			// valid — no credentials needed
 		default:
 			return fmt.Errorf("service %q has unknown auth method %q", svc.Name, svc.Auth.Method)
 		}
