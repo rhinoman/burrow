@@ -1,7 +1,9 @@
 package reports
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,6 +81,120 @@ func TestExportHTMLWithChartPNG(t *testing.T) {
 	if strings.Contains(html, "```chart") {
 		t.Error("expected chart block to be replaced")
 	}
+}
+
+func TestFindPDFConverterNone(t *testing.T) {
+	orig := lookPath
+	defer func() { lookPath = orig }()
+
+	lookPath = func(file string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+
+	conv := findPDFConverter()
+	if conv != nil {
+		t.Errorf("expected nil converter when no tools available, got %s", conv.Name)
+	}
+}
+
+func TestFindPDFConverterOrder(t *testing.T) {
+	orig := lookPath
+	defer func() { lookPath = orig }()
+
+	// Only pandoc is available
+	lookPath = func(file string) (string, error) {
+		if file == "pandoc" {
+			return "/usr/bin/pandoc", nil
+		}
+		return "", exec.ErrNotFound
+	}
+
+	conv := findPDFConverter()
+	if conv == nil {
+		t.Fatal("expected pandoc converter")
+	}
+	if conv.Name != "pandoc" {
+		t.Errorf("expected pandoc, got %s", conv.Name)
+	}
+}
+
+func TestFindPDFConverterPreference(t *testing.T) {
+	orig := lookPath
+	defer func() { lookPath = orig }()
+
+	// Both weasyprint and wkhtmltopdf available — weasyprint should win
+	lookPath = func(file string) (string, error) {
+		if file == "weasyprint" || file == "wkhtmltopdf" {
+			return "/usr/bin/" + file, nil
+		}
+		return "", exec.ErrNotFound
+	}
+
+	conv := findPDFConverter()
+	if conv == nil {
+		t.Fatal("expected weasyprint converter")
+	}
+	if conv.Name != "weasyprint" {
+		t.Errorf("expected weasyprint, got %s", conv.Name)
+	}
+}
+
+func TestExportPDFNoTool(t *testing.T) {
+	orig := lookPath
+	defer func() { lookPath = orig }()
+
+	lookPath = func(file string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+
+	_, err := ExportPDF("# Test\n", "Test", "")
+	if err == nil {
+		t.Fatal("expected error when no PDF converter available")
+	}
+	msg := err.Error()
+	for _, tool := range []string{"weasyprint", "wkhtmltopdf", "pandoc"} {
+		if !strings.Contains(msg, tool) {
+			t.Errorf("error message should mention %s: %s", tool, msg)
+		}
+	}
+}
+
+func TestExportPDFIntegration(t *testing.T) {
+	// Only run if a real converter is available
+	orig := lookPath
+	lookPath = exec.LookPath // use real LookPath
+	conv := findPDFConverter()
+	lookPath = orig
+
+	if conv == nil {
+		t.Skip("no PDF converter installed — skipping integration test")
+	}
+
+	// Use real lookPath for the full test
+	lookPath = exec.LookPath
+	defer func() { lookPath = orig }()
+
+	pdf, err := ExportPDF("# Integration Test\n\nHello, PDF.\n", "Integration Test", "")
+	if err != nil {
+		t.Fatalf("ExportPDF: %v", err)
+	}
+	if len(pdf) < 4 || string(pdf[:5]) != "%PDF-" {
+		t.Errorf("expected PDF magic bytes, got %q", string(pdf[:min(len(pdf), 10)]))
+	}
+
+	// Write to temp file to verify it's a valid file
+	outPath := filepath.Join(t.TempDir(), "test.pdf")
+	if err := os.WriteFile(outPath, pdf, 0o644); err != nil {
+		t.Fatalf("writing PDF: %v", err)
+	}
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("stat PDF: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Error("PDF file is empty")
+	}
+	fmt.Printf("PDF export successful (%d bytes) using %s\n", info.Size(), conv.Name)
 }
 
 func TestExportHTMLChartFallbackTable(t *testing.T) {

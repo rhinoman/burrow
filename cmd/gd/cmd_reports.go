@@ -22,7 +22,7 @@ func init() {
 	reportsCmd.AddCommand(reportsExportCmd)
 	reportsCmd.AddCommand(reportsCompareCmd)
 
-	reportsExportCmd.Flags().StringVar(&exportFormat, "format", "md", "export format: md or html")
+	reportsExportCmd.Flags().StringVar(&exportFormat, "format", "md", "export format: md, html, or pdf")
 }
 
 var reportsCmd = &cobra.Command{
@@ -175,8 +175,31 @@ var reportsExportCmd = &cobra.Command{
 			}
 			fmt.Printf("Exported: %s\n", outName)
 
+		case "pdf":
+			pdfData, err := reports.ExportPDF(report.Markdown, title, report.Dir)
+			if err != nil {
+				// Fall back to HTML export
+				fmt.Fprintf(os.Stderr, "PDF export failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Falling back to HTML export.\n")
+				html, htmlErr := reports.ExportHTML(report.Markdown, title, report.Dir)
+				if htmlErr != nil {
+					return fmt.Errorf("HTML fallback also failed: %w", htmlErr)
+				}
+				outName := report.Routine + "-" + report.Date + ".html"
+				if err := os.WriteFile(outName, []byte(html), 0o644); err != nil {
+					return fmt.Errorf("writing HTML fallback: %w", err)
+				}
+				fmt.Printf("Exported (HTML fallback): %s\n", outName)
+				return nil
+			}
+			outName := report.Routine + "-" + report.Date + ".pdf"
+			if err := os.WriteFile(outName, pdfData, 0o644); err != nil {
+				return fmt.Errorf("writing PDF: %w", err)
+			}
+			fmt.Printf("Exported: %s\n", outName)
+
 		default:
-			return fmt.Errorf("unsupported format %q (use md or html)", exportFormat)
+			return fmt.Errorf("unsupported format %q (use md, html, or pdf)", exportFormat)
 		}
 
 		return nil
@@ -297,10 +320,18 @@ Format your response as structured markdown with clear sections.`
 		if combinedSize > maxCompareBytes {
 			half := maxCompareBytes / 2
 			if len(md1) > half {
-				md1 = md1[:half] + "\n\n[... truncated ...]\n"
+				runes := []rune(md1)
+				if half < len(runes) {
+					runes = runes[:half]
+				}
+				md1 = string(runes) + "\n\n[... truncated ...]\n"
 			}
 			if len(md2) > half {
-				md2 = md2[:half] + "\n\n[... truncated ...]\n"
+				runes := []rune(md2)
+				if half < len(runes) {
+					runes = runes[:half]
+				}
+				md2 = string(runes) + "\n\n[... truncated ...]\n"
 			}
 			fmt.Fprintf(os.Stderr, "Note: reports truncated from %d to ~%d bytes for comparison.\n",
 				combinedSize, maxCompareBytes)

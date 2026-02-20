@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -12,6 +14,103 @@ import (
 	"github.com/jcadam/burrow/pkg/charts"
 	"github.com/yuin/goldmark"
 )
+
+// lookPath is an injectable wrapper around exec.LookPath for testing.
+var lookPath = exec.LookPath
+
+// PDFConverter describes an external tool that can convert HTML to PDF.
+type PDFConverter struct {
+	Name string
+	Args func(inPath, outPath string) []string
+}
+
+// findPDFConverter probes PATH for a supported HTML-to-PDF converter.
+// Returns nil if none found. Preference order: weasyprint, wkhtmltopdf, pandoc.
+func findPDFConverter() *PDFConverter {
+	converters := []PDFConverter{
+		{
+			Name: "weasyprint",
+			Args: func(in, out string) []string { return []string{in, out} },
+		},
+		{
+			Name: "wkhtmltopdf",
+			Args: func(in, out string) []string { return []string{"--quiet", in, out} },
+		},
+		{
+			Name: "pandoc",
+			Args: func(in, out string) []string { return []string{in, "-o", out} },
+		},
+	}
+	for _, c := range converters {
+		if _, err := lookPath(c.Name); err == nil {
+			found := c // copy
+			return &found
+		}
+	}
+	return nil
+}
+
+// ExportPDF converts markdown to PDF via an external converter.
+// It first renders self-contained HTML (with embedded charts), then shells out
+// to a converter. If no converter is found, it returns an error with install
+// instructions.
+func ExportPDF(markdown, title, reportDir string) ([]byte, error) {
+	conv := findPDFConverter()
+	if conv == nil {
+		return nil, fmt.Errorf("no PDF converter found.\n\nInstall one of:\n  weasyprint  — pip install weasyprint\n  wkhtmltopdf — https://wkhtmltopdf.org\n  pandoc      — https://pandoc.org")
+	}
+
+	htmlContent, err := ExportHTML(markdown, title, reportDir)
+	if err != nil {
+		return nil, fmt.Errorf("generating HTML for PDF: %w", err)
+	}
+
+	return convertHTMLToPDF(conv, htmlContent)
+}
+
+// convertHTMLToPDF writes HTML to a temp file, runs the converter, and returns
+// the resulting PDF bytes.
+func convertHTMLToPDF(conv *PDFConverter, htmlContent string) ([]byte, error) {
+	inFile, err := os.CreateTemp("", "burrow-export-*.html")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp HTML file: %w", err)
+	}
+	defer os.Remove(inFile.Name())
+
+	if _, err := inFile.WriteString(htmlContent); err != nil {
+		inFile.Close()
+		return nil, fmt.Errorf("writing temp HTML: %w", err)
+	}
+	inFile.Close()
+
+	outFile, err := os.CreateTemp("", "burrow-export-*.pdf")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp PDF file: %w", err)
+	}
+	outFile.Close()
+	defer os.Remove(outFile.Name())
+
+	args := conv.Args(inFile.Name(), outFile.Name())
+	cmd := exec.Command(conv.Name, args...)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		detail := stderr.String()
+		if detail != "" {
+			return nil, fmt.Errorf("%s failed: %w\n%s", conv.Name, err, detail)
+		}
+		return nil, fmt.Errorf("%s failed: %w", conv.Name, err)
+	}
+
+	pdfData, err := os.ReadFile(outFile.Name())
+	if err != nil {
+		return nil, fmt.Errorf("reading PDF output: %w", err)
+	}
+
+	return pdfData, nil
+}
 
 // ExportHTML converts markdown to a self-contained HTML document.
 // If reportDir is non-empty and contains a charts/ subdirectory, chart
@@ -77,7 +176,7 @@ func replaceChartCodeBlocks(htmlBody, rawMarkdown, reportDir string) string {
 	result := htmlBody
 	for i := len(matches) - 1; i >= 0; i-- {
 		if i >= len(directives) {
-			break
+			continue
 		}
 		d := directives[i]
 		var replacement string
