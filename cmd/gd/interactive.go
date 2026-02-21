@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,14 @@ import (
 	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
 	"github.com/jcadam/burrow/pkg/synthesis"
+	"golang.org/x/term"
 )
+
+// readWriter combines separate reader and writer into an io.ReadWriter.
+type readWriter struct {
+	io.Reader
+	io.Writer
+}
 
 // interactiveSession holds state for the interactive REPL.
 type interactiveSession struct {
@@ -30,6 +38,55 @@ type interactiveSession struct {
 	profile   *profile.Profile
 	provider  synthesis.Provider
 	handoff   *actions.Handoff
+	term      *term.Terminal // line editor (nil when stdin is not a tty)
+	fd        int            // stdin file descriptor
+	rawState  *term.State    // saved state for restore
+	scanner   *bufio.Scanner // fallback for non-TTY input
+}
+
+// out returns the writer for REPL output. In raw mode this is the Terminal
+// (which translates \n to \r\n); otherwise it is os.Stdout.
+func (s *interactiveSession) out() io.Writer {
+	if s.term != nil {
+		return s.term
+	}
+	return os.Stdout
+}
+
+// readLine reads one line with proper UTF-8 editing support.
+// Falls back to bufio.Scanner when not a TTY.
+func (s *interactiveSession) readLine() (string, error) {
+	if s.term != nil {
+		return s.term.ReadLine()
+	}
+	if s.scanner.Scan() {
+		return s.scanner.Text(), nil
+	}
+	if err := s.scanner.Err(); err != nil {
+		return "", err
+	}
+	return "", io.EOF
+}
+
+// suspendTerm restores cooked mode before launching sub-programs (viewer).
+func (s *interactiveSession) suspendTerm() {
+	if s.rawState != nil {
+		term.Restore(s.fd, s.rawState)
+	}
+}
+
+// resumeTerm re-enters raw mode and creates a fresh Terminal.
+func (s *interactiveSession) resumeTerm() error {
+	if s.term == nil {
+		return nil
+	}
+	state, err := term.MakeRaw(s.fd)
+	if err != nil {
+		return fmt.Errorf("re-entering raw mode: %w", err)
+	}
+	s.rawState = state
+	s.term = term.NewTerminal(readWriter{os.Stdin, os.Stdout}, "  > ")
+	return nil
 }
 
 // runInteractive starts the interactive REPL.
@@ -90,7 +147,7 @@ func runInteractive(ctx context.Context) error {
 		handoff:   handoff,
 	}
 
-	// Print banner
+	// Print banner (before raw mode, to os.Stdout)
 	svcCount := len(cfg.Services)
 	fmt.Printf("\n  Burrow %s . %d source(s) configured", version, svcCount)
 	if contactStore != nil {
@@ -108,14 +165,29 @@ func runInteractive(ctx context.Context) error {
 	fmt.Println("  Type 'help' for commands, or ask a question.")
 	fmt.Println()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	// Set up line editing: raw mode with term.Terminal when stdin is a TTY,
+	// plain bufio.Scanner otherwise (piped input).
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		state, err := term.MakeRaw(fd)
+		if err != nil {
+			return fmt.Errorf("entering raw mode: %w", err)
+		}
+		sess.fd = fd
+		sess.rawState = state
+		sess.term = term.NewTerminal(readWriter{os.Stdin, os.Stdout}, "  > ")
+		defer term.Restore(fd, state)
+	} else {
+		sess.scanner = bufio.NewScanner(os.Stdin)
+	}
+
 	for {
-		fmt.Print("  > ")
-		if !scanner.Scan() {
-			fmt.Println()
+		line, err := sess.readLine()
+		if err != nil {
+			fmt.Fprintln(sess.out())
 			return nil
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
@@ -130,9 +202,11 @@ func runInteractive(ctx context.Context) error {
 		case strings.HasPrefix(line, "search ") || strings.HasPrefix(line, "query "):
 			sess.handleServiceQuery(ctx, line)
 		case strings.HasPrefix(line, "view"):
-			sess.handleView(strings.TrimSpace(strings.TrimPrefix(line, "view")))
+			if err := sess.handleView(strings.TrimSpace(strings.TrimPrefix(line, "view"))); err != nil {
+				return err
+			}
 		case strings.HasPrefix(line, "draft "):
-			sess.handleDraft(ctx, scanner, strings.TrimPrefix(line, "draft "))
+			sess.handleDraft(ctx, strings.TrimPrefix(line, "draft "))
 		case strings.HasPrefix(line, "ask "):
 			sess.handleAsk(ctx, strings.TrimPrefix(line, "ask "))
 		default:
@@ -143,7 +217,7 @@ func runInteractive(ctx context.Context) error {
 }
 
 func (s *interactiveSession) printHelp() {
-	fmt.Print(`
+	fmt.Fprint(s.out(), `
   Commands:
     help                          Show this help
     sources                       List configured services and tools
@@ -158,29 +232,30 @@ func (s *interactiveSession) printHelp() {
 }
 
 func (s *interactiveSession) printSources() {
+	w := s.out()
 	if len(s.cfg.Services) == 0 {
-		fmt.Println("  No services configured.")
+		fmt.Fprintln(w, "  No services configured.")
 		return
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 	for _, svc := range s.cfg.Services {
-		fmt.Printf("    %s (%s)\n", svc.Name, svc.Endpoint)
+		fmt.Fprintf(w, "    %s (%s)\n", svc.Name, svc.Endpoint)
 		if svc.Type == "rss" {
-			fmt.Printf("      - feed: RSS/Atom feed\n")
+			fmt.Fprintf(w, "      - feed: RSS/Atom feed\n")
 		}
 		for _, tool := range svc.Tools {
 			desc := tool.Description
 			if desc == "" {
 				desc = tool.Method + " " + tool.Path
 			}
-			fmt.Printf("      - %s: %s\n", tool.Name, desc)
+			fmt.Fprintf(w, "      - %s: %s\n", tool.Name, desc)
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 }
 
 // handleView opens the latest report in the interactive viewer.
-func (s *interactiveSession) handleView(routine string) {
+func (s *interactiveSession) handleView(routine string) error {
 	reportsDir := filepath.Join(s.burrowDir, "reports")
 
 	var report *reports.Report
@@ -189,18 +264,18 @@ func (s *interactiveSession) handleView(routine string) {
 	if routine != "" {
 		report, err = resolveReport(reportsDir, routine)
 		if err != nil {
-			fmt.Printf("  %v\n", err)
-			return
+			fmt.Fprintf(s.out(), "  %v\n", err)
+			return nil
 		}
 	} else {
 		all, err := reports.List(reportsDir)
 		if err != nil {
-			fmt.Printf("  Error listing reports: %v\n", err)
-			return
+			fmt.Fprintf(s.out(), "  Error listing reports: %v\n", err)
+			return nil
 		}
 		if len(all) == 0 {
-			fmt.Println("  No reports found.")
-			return
+			fmt.Fprintln(s.out(), "  No reports found.")
+			return nil
 		}
 		report = all[0]
 	}
@@ -215,38 +290,45 @@ func (s *interactiveSession) handleView(routine string) {
 		opts = append(opts, render.WithLedger(s.ledger))
 	}
 
-	if err := render.RunViewer(title, report.Markdown, opts...); err != nil {
-		fmt.Printf("  Viewer error: %v\n", err)
+	s.suspendTerm()
+	viewErr := render.RunViewer(title, report.Markdown, opts...)
+	if err := s.resumeTerm(); err != nil {
+		return err
 	}
+	if viewErr != nil {
+		fmt.Fprintf(s.out(), "  Viewer error: %v\n", viewErr)
+	}
+	return nil
 }
 
 // handleServiceQuery dispatches a query to a named service tool.
 func (s *interactiveSession) handleServiceQuery(ctx context.Context, line string) {
+	w := s.out()
 	svcName, toolName, params := parseServiceQuery(line)
 	if svcName == "" || toolName == "" {
-		fmt.Println("  Usage: search <service> <tool> [key=value ...]")
+		fmt.Fprintln(w, "  Usage: search <service> <tool> [key=value ...]")
 		return
 	}
 
 	svc, err := s.registry.Get(svcName)
 	if err != nil {
-		fmt.Printf("  Unknown service: %s\n", svcName)
-		fmt.Printf("  Available: %s\n", strings.Join(s.registry.List(), ", "))
+		fmt.Fprintf(w, "  Unknown service: %s\n", svcName)
+		fmt.Fprintf(w, "  Available: %s\n", strings.Join(s.registry.List(), ", "))
 		return
 	}
 
 	result, err := svc.Execute(ctx, toolName, params)
 	if err != nil {
-		fmt.Printf("  Error: %v\n", err)
+		fmt.Fprintf(w, "  Error: %v\n", err)
 		return
 	}
 
 	if result.Error != "" {
-		fmt.Printf("  Service error: %s\n", result.Error)
+		fmt.Fprintf(w, "  Service error: %s\n", result.Error)
 		return
 	}
 
-	fmt.Printf("\n%s\n\n", string(result.Data))
+	fmt.Fprintf(w, "\n%s\n\n", string(result.Data))
 
 	// Log to context ledger
 	if s.ledger != nil {
@@ -261,10 +343,11 @@ func (s *interactiveSession) handleServiceQuery(ctx context.Context, line string
 
 // handleAsk queries the local LLM over context data, or falls back to text search.
 func (s *interactiveSession) handleAsk(ctx context.Context, question string) {
+	w := s.out()
 	if s.provider != nil && s.ledger != nil {
 		contextData, err := s.ledger.GatherContext(100_000)
 		if err != nil {
-			fmt.Printf("  Error gathering context: %v\n", err)
+			fmt.Fprintf(w, "  Error gathering context: %v\n", err)
 			return
 		}
 		if s.contacts != nil {
@@ -282,15 +365,15 @@ func (s *interactiveSession) handleAsk(ctx context.Context, question string) {
 
 			response, err := s.provider.Complete(ctx, buildAskSystemPrompt(s.profile), userPrompt.String())
 			if err != nil {
-				fmt.Printf("  LLM error: %v\n", err)
+				fmt.Fprintf(w, "  LLM error: %v\n", err)
 				return
 			}
 
 			rendered, err := render.RenderMarkdown(response, 78)
 			if err != nil {
-				fmt.Println(response)
+				fmt.Fprintln(w, response)
 			} else {
-				fmt.Print(rendered)
+				fmt.Fprint(w, rendered)
 			}
 
 			// Log to ledger
@@ -306,30 +389,31 @@ func (s *interactiveSession) handleAsk(ctx context.Context, question string) {
 
 	// Fallback to text search
 	if s.ledger == nil {
-		fmt.Println("  No context ledger available.")
+		fmt.Fprintln(w, "  No context ledger available.")
 		return
 	}
 	entries, err := s.ledger.Search(question)
 	if err != nil {
-		fmt.Printf("  Search error: %v\n", err)
+		fmt.Fprintf(w, "  Search error: %v\n", err)
 		return
 	}
 	if len(entries) == 0 {
-		fmt.Printf("  No results for %q\n", question)
+		fmt.Fprintf(w, "  No results for %q\n", question)
 		return
 	}
-	fmt.Printf("  Found %d result(s):\n\n", len(entries))
+	fmt.Fprintf(w, "  Found %d result(s):\n\n", len(entries))
 	for _, e := range entries {
 		ts := e.Timestamp.Format("2006-01-02 15:04")
-		fmt.Printf("    %s  [%s]  %s\n", ts, e.Type, e.Label)
+		fmt.Fprintf(w, "    %s  [%s]  %s\n", ts, e.Type, e.Label)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 }
 
 // handleDraft generates a communication draft and presents an action menu.
-func (s *interactiveSession) handleDraft(ctx context.Context, scanner *bufio.Scanner, instruction string) {
+func (s *interactiveSession) handleDraft(ctx context.Context, instruction string) {
+	w := s.out()
 	if s.provider == nil {
-		fmt.Println("  Draft generation requires a local LLM. Configure one with 'gd configure'.")
+		fmt.Fprintln(w, "  Draft generation requires a local LLM. Configure one with 'gd configure'.")
 		return
 	}
 
@@ -343,47 +427,47 @@ func (s *interactiveSession) handleDraft(ctx context.Context, scanner *bufio.Sca
 		}
 	}
 
-	fmt.Println("  Generating draft...")
+	fmt.Fprintln(w, "  Generating draft...")
 	draft, err := actions.GenerateDraft(ctx, s.provider, instruction, contextData, s.profile)
 	if err != nil {
-		fmt.Printf("  Error: %v\n", err)
+		fmt.Fprintf(w, "  Error: %v\n", err)
 		return
 	}
 
 	// Display draft
-	fmt.Println()
+	fmt.Fprintln(w)
 	if draft.To != "" {
-		fmt.Printf("  To: %s\n", draft.To)
+		fmt.Fprintf(w, "  To: %s\n", draft.To)
 	}
 	if draft.Subject != "" {
-		fmt.Printf("  Subject: %s\n", draft.Subject)
+		fmt.Fprintf(w, "  Subject: %s\n", draft.Subject)
 	}
-	fmt.Println()
-	fmt.Println(draft.Body)
-	fmt.Println()
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, draft.Body)
+	fmt.Fprintln(w)
 
 	// Action menu
-	fmt.Println("  [c]opy  [m]ail  [d]iscard")
-	fmt.Print("  > ")
-	if !scanner.Scan() {
+	fmt.Fprintln(w, "  [c]opy  [m]ail  [d]iscard")
+	line, err := s.readLine()
+	if err != nil {
 		return
 	}
 
-	switch strings.TrimSpace(scanner.Text()) {
+	switch strings.TrimSpace(line) {
 	case "c", "copy":
 		if err := actions.CopyToClipboard(draft.Raw); err != nil {
-			fmt.Printf("  %v\n", err)
+			fmt.Fprintf(w, "  %v\n", err)
 		} else {
-			fmt.Println("  Copied to clipboard.")
+			fmt.Fprintln(w, "  Copied to clipboard.")
 		}
 	case "m", "mail":
 		if err := s.handoff.OpenMailto(draft.To, draft.Subject, draft.Body); err != nil {
-			fmt.Printf("  %v\n", err)
+			fmt.Fprintf(w, "  %v\n", err)
 		} else {
-			fmt.Println("  Opened in email app.")
+			fmt.Fprintln(w, "  Opened in email app.")
 		}
 	case "d", "discard", "":
-		fmt.Println("  Discarded.")
+		fmt.Fprintln(w, "  Discarded.")
 	}
 }
 
