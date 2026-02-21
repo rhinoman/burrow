@@ -11,8 +11,8 @@
 # jitter: 300              # spread queries over 5 minutes
 
 # LLM provider for synthesis. "none" = passthrough (raw data in markdown).
-# Change to a provider name from config.yaml to enable AI synthesis.
-llm: none
+# Set to a provider name from config.yaml to enable AI synthesis.
+llm: local/llama3:latest
 
 report:
   title: "Weather Report — Denver/Boulder, CO"
@@ -20,11 +20,17 @@ report:
   # generate_charts: true
   # max_length: 5000
 
-# --- Synthesis prompt (used when llm is not "none") ---
-# synthesis:
-#   system: |
-#     You are a weather analyst. Summarize the forecast and highlight
-#     any severe weather. Include suggested actions for the day.
+# Synthesis prompt — sent to the LLM as a system prompt when llm is not "none".
+synthesis:
+  system: |
+    You are a weather analyst. Produce a clear, readable weather report from the
+    raw forecast and alert data. Include:
+    - Today's conditions and notable weather
+    - Multi-day outlook highlighting significant changes
+    - Any active alerts with recommended actions
+    - A brief summary suitable for planning the day
+
+    Use plain language. Skip technical grid metadata.
 
 sources:
   - service: weather-gov

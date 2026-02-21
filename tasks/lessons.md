@@ -181,3 +181,10 @@
 - Any test comparing dates after timezone conversion must use explicit `time.Location`
 - For test routines with Schedule fields: always set `Timezone: "UTC"` explicitly
 - For isDue tests: pass `time.UTC` as the loc parameter directly
+
+## Support both $VAR and ${VAR} for env var references
+- Users naturally type `$OPENROUTER_API_KEY` (bare form), not `${OPENROUTER_API_KEY}` (braced form)
+- The regex `\$\{([^}]+)\}` only matches the braced form — bare `$VAR` silently passes through unresolved
+- Extended pattern: `\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)` handles both
+- Apply the same fix to `resolveEnvRef` in quickstart (verification step)
+- Check your actual config file on disk to verify what the user entered, not just the code paths

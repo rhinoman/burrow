@@ -8,7 +8,7 @@ import (
 
 func TestWizardRunInitOllama(t *testing.T) {
 	// Simulate: choose Ollama, accept defaults, skip service, accept privacy, accept app defaults
-	input := "1\n\nqwen2.5:14b\n\nn\ny\n\n\n"
+	input := "1\n\nqwen2.5:14b\nn\ny\n\n\n"
 	r := strings.NewReader(input)
 	var out bytes.Buffer
 
@@ -77,7 +77,7 @@ func TestWizardRunInitWithService(t *testing.T) {
 
 func TestWizardRunInitOpenRouter(t *testing.T) {
 	// Choose OpenRouter, acknowledge remote warning, skip service, accept privacy, accept app defaults
-	input := "2\n${OPENROUTER_KEY}\nopenai/gpt-4\n\ny\nn\ny\n\n\n"
+	input := "2\n${OPENROUTER_KEY}\nopenai/gpt-4\ny\nn\ny\n\n\n"
 	r := strings.NewReader(input)
 	var out bytes.Buffer
 

@@ -68,21 +68,21 @@ services:
 
 # --- LLM providers ---
 #
-# Add a provider to enable AI-powered synthesis instead of passthrough.
+# Quickstart auto-detects Ollama and generates a section like this:
+llm:
+  providers:
+    - name: local/llama3:latest
+      type: ollama
+      endpoint: http://localhost:11434
+      model: "llama3:latest"
+      privacy: local
+
+# Additional providers (uncomment to add):
 #
-# llm:
-#   providers:
-#     - name: local/qwen
-#       type: ollama
-#       endpoint: http://localhost:11434
-#       model: qwen2.5:14b
-#       privacy: local
-#
-#     - name: cloud/gpt
+#     - name: openrouter/openai/gpt-4o-mini
 #       type: openrouter
-#       endpoint: https://openrouter.ai/api/v1
 #       api_key: ${OPENROUTER_API_KEY}
-#       model: openai/gpt-4
+#       model: openai/gpt-4o-mini
 #       privacy: remote
 
 privacy:

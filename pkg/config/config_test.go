@@ -156,6 +156,62 @@ func TestResolveEnvVarsUnset(t *testing.T) {
 	}
 }
 
+func TestResolveEnvVarsBareForm(t *testing.T) {
+	t.Setenv("MY_API_KEY", "resolved-bare")
+
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{
+				Name:     "svc",
+				Type:     "rest",
+				Endpoint: "http://example.com",
+				Auth:     AuthConfig{Method: "api_key", Key: "$MY_API_KEY"},
+			},
+		},
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{
+					Name:    "openrouter/model",
+					Type:    "openrouter",
+					APIKey:  "$MY_API_KEY",
+					Privacy: "remote",
+				},
+			},
+		},
+	}
+
+	ResolveEnvVars(cfg)
+
+	if cfg.Services[0].Auth.Key != "resolved-bare" {
+		t.Errorf("expected resolved bare $VAR for service key, got %q", cfg.Services[0].Auth.Key)
+	}
+	if cfg.LLM.Providers[0].APIKey != "resolved-bare" {
+		t.Errorf("expected resolved bare $VAR for LLM API key, got %q", cfg.LLM.Providers[0].APIKey)
+	}
+}
+
+func TestResolveEnvVarsBareFormUnset(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{
+					Name:    "openrouter/model",
+					Type:    "openrouter",
+					APIKey:  "$NONEXISTENT_VAR_XYZ",
+					Privacy: "remote",
+				},
+			},
+		},
+	}
+
+	ResolveEnvVars(cfg)
+
+	// Unset var should be left as-is
+	if cfg.LLM.Providers[0].APIKey != "$NONEXISTENT_VAR_XYZ" {
+		t.Errorf("expected unresolved $VAR, got %q", cfg.LLM.Providers[0].APIKey)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	dir := t.TempDir()
 	writeTestConfig(t, dir, testConfig)
@@ -477,6 +533,87 @@ func TestDeepCopy(t *testing.T) {
 	}
 	if original.LLM.Providers[0].Name != "local" {
 		t.Errorf("original provider mutated: %q", original.LLM.Providers[0].Name)
+	}
+}
+
+func TestResolveEnvVarsLLMProvider(t *testing.T) {
+	t.Setenv("TEST_LLM_KEY", "sk-or-resolved-key")
+
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{
+					Name:    "openrouter/openai/gpt-4o-mini",
+					Type:    "openrouter",
+					APIKey:  "${TEST_LLM_KEY}",
+					Model:   "openai/gpt-4o-mini",
+					Privacy: "remote",
+				},
+			},
+		},
+	}
+
+	// Before resolution
+	if cfg.LLM.Providers[0].APIKey != "${TEST_LLM_KEY}" {
+		t.Fatalf("expected unresolved ${TEST_LLM_KEY}, got %q", cfg.LLM.Providers[0].APIKey)
+	}
+
+	// DeepCopy should preserve the ${VAR} reference
+	copied := cfg.DeepCopy()
+	if copied.LLM.Providers[0].APIKey != "${TEST_LLM_KEY}" {
+		t.Fatalf("DeepCopy lost ${VAR} reference, got %q", copied.LLM.Providers[0].APIKey)
+	}
+
+	// Resolve on the copy
+	ResolveEnvVars(copied)
+	if copied.LLM.Providers[0].APIKey != "sk-or-resolved-key" {
+		t.Errorf("expected resolved API key sk-or-resolved-key, got %q", copied.LLM.Providers[0].APIKey)
+	}
+
+	// Original must be unaffected
+	if cfg.LLM.Providers[0].APIKey != "${TEST_LLM_KEY}" {
+		t.Errorf("original mutated after ResolveEnvVars on copy: %q", cfg.LLM.Providers[0].APIKey)
+	}
+}
+
+func TestResolveEnvVarsLLMProviderSaveLoadRoundTrip(t *testing.T) {
+	t.Setenv("TEST_LLM_KEY2", "sk-or-from-disk")
+
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{
+					Name:    "openrouter/openai/gpt-4o-mini",
+					Type:    "openrouter",
+					APIKey:  "${TEST_LLM_KEY2}",
+					Model:   "openai/gpt-4o-mini",
+					Privacy: "remote",
+				},
+			},
+		},
+	}
+
+	// Save to disk
+	dir := t.TempDir()
+	if err := Save(dir, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Load from disk
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Should still have the ${VAR} reference
+	if loaded.LLM.Providers[0].APIKey != "${TEST_LLM_KEY2}" {
+		t.Fatalf("Save/Load lost ${VAR} reference, got %q", loaded.LLM.Providers[0].APIKey)
+	}
+
+	// Resolve
+	ResolveEnvVars(loaded)
+	if loaded.LLM.Providers[0].APIKey != "sk-or-from-disk" {
+		t.Errorf("expected resolved API key sk-or-from-disk, got %q", loaded.LLM.Providers[0].APIKey)
 	}
 }
 

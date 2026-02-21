@@ -70,8 +70,52 @@ func TestQuickstartConfigValid(t *testing.T) {
 	}
 }
 
-func TestQuickstartRoutineValid(t *testing.T) {
-	routine := buildQuickstartRoutine()
+func TestQuickstartConfigWithProvider(t *testing.T) {
+	cfg := buildQuickstartConfig()
+
+	// Simulate what setupQuickstartLLM does when Ollama is detected
+	cfg.LLM.Providers = append(cfg.LLM.Providers, config.ProviderConfig{
+		Name:     "local/llama3:latest",
+		Type:     "ollama",
+		Endpoint: "http://localhost:11434",
+		Model:    "llama3:latest",
+		Privacy:  "local",
+	})
+
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("config with provider should be valid: %v", err)
+	}
+
+	// Round-trip
+	dir := t.TempDir()
+	if err := config.Save(dir, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(loaded.LLM.Providers) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(loaded.LLM.Providers))
+	}
+	prov := loaded.LLM.Providers[0]
+	if prov.Name != "local/llama3:latest" {
+		t.Errorf("expected provider name local/llama3:latest, got %q", prov.Name)
+	}
+	if prov.Type != "ollama" {
+		t.Errorf("expected type ollama, got %q", prov.Type)
+	}
+	if prov.Model != "llama3:latest" {
+		t.Errorf("expected model llama3:latest, got %q", prov.Model)
+	}
+	if prov.Privacy != "local" {
+		t.Errorf("expected privacy local, got %q", prov.Privacy)
+	}
+}
+
+func TestQuickstartRoutineNone(t *testing.T) {
+	routine := buildQuickstartRoutine("none")
 
 	// Save and reload
 	dir := t.TempDir()
@@ -93,6 +137,9 @@ func TestQuickstartRoutineValid(t *testing.T) {
 	if loaded.Report.Title != "Weather Report — Denver/Boulder, CO" {
 		t.Errorf("expected report title, got %q", loaded.Report.Title)
 	}
+	if loaded.Synthesis.System != "" {
+		t.Errorf("expected no synthesis prompt for llm:none, got %q", loaded.Synthesis.System)
+	}
 	if len(loaded.Sources) != 2 {
 		t.Fatalf("expected 2 sources, got %d", len(loaded.Sources))
 	}
@@ -101,6 +148,31 @@ func TestQuickstartRoutineValid(t *testing.T) {
 	}
 	if loaded.Sources[1].Service != "weather-gov" || loaded.Sources[1].Tool != "alerts" {
 		t.Errorf("unexpected second source: %+v", loaded.Sources[1])
+	}
+}
+
+func TestQuickstartRoutineWithLLM(t *testing.T) {
+	routine := buildQuickstartRoutine("local/llama3:latest")
+
+	// Save and reload
+	dir := t.TempDir()
+	if err := pipeline.SaveRoutine(dir, routine); err != nil {
+		t.Fatalf("SaveRoutine: %v", err)
+	}
+
+	loaded, err := pipeline.LoadRoutine(filepath.Join(dir, "weather.yaml"))
+	if err != nil {
+		t.Fatalf("LoadRoutine: %v", err)
+	}
+
+	if loaded.LLM != "local/llama3:latest" {
+		t.Errorf("expected llm local/llama3:latest, got %q", loaded.LLM)
+	}
+	if loaded.Synthesis.System == "" {
+		t.Error("expected synthesis prompt for llm provider")
+	}
+	if !strings.Contains(loaded.Synthesis.System, "weather analyst") {
+		t.Errorf("expected weather analyst in synthesis prompt, got %q", loaded.Synthesis.System)
 	}
 }
 
@@ -128,6 +200,8 @@ func TestQuickstartExistingConfig(t *testing.T) {
 	}
 }
 
+// TestQuickstartEndToEnd tests the full pipeline with passthrough (llm: none path).
+// The LLM synthesis path is covered by integration tests in pkg/pipeline.
 func TestQuickstartEndToEnd(t *testing.T) {
 	// Sample NWS forecast response
 	forecastJSON := `{
@@ -201,8 +275,8 @@ func TestQuickstartEndToEnd(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Build routine and execute
-	routine := buildQuickstartRoutine()
+	// Build routine with passthrough (llm: none)
+	routine := buildQuickstartRoutine("none")
 	synth := synthesis.NewPassthroughSynthesizer()
 	executor := pipeline.NewExecutor(registry, synth, reportsDir)
 
@@ -257,5 +331,33 @@ func TestQuickstartEndToEnd(t *testing.T) {
 	}
 	if latest == nil {
 		t.Fatal("expected to find latest weather report")
+	}
+}
+
+func TestResolveEnvRef(t *testing.T) {
+	// Plain value
+	if got := resolveEnvRef("sk-abc123"); got != "sk-abc123" {
+		t.Errorf("expected plain value unchanged, got %q", got)
+	}
+
+	// Braced form: ${VAR}
+	t.Setenv("TEST_QS_KEY", "resolved-value")
+	if got := resolveEnvRef("${TEST_QS_KEY}"); got != "resolved-value" {
+		t.Errorf("expected resolved env var, got %q", got)
+	}
+
+	// Bare form: $VAR
+	if got := resolveEnvRef("$TEST_QS_KEY"); got != "resolved-value" {
+		t.Errorf("expected resolved bare $VAR, got %q", got)
+	}
+
+	// Braced form that doesn't exist — returns original
+	if got := resolveEnvRef("${NONEXISTENT_QS_VAR}"); got != "${NONEXISTENT_QS_VAR}" {
+		t.Errorf("expected unresolved env var returned as-is, got %q", got)
+	}
+
+	// Bare form that doesn't exist — returns original
+	if got := resolveEnvRef("$NONEXISTENT_QS_VAR"); got != "$NONEXISTENT_QS_VAR" {
+		t.Errorf("expected unresolved bare $VAR returned as-is, got %q", got)
 	}
 }

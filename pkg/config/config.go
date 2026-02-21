@@ -161,9 +161,13 @@ func Load(burrowDir string) (*Config, error) {
 	return &cfg, nil
 }
 
-var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+// envVarPattern matches both ${VAR_NAME} and $VAR_NAME forms.
+// The braced form allows any characters except }. The bare form
+// matches standard env var names: letters/underscore start, then
+// letters/digits/underscores.
+var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 
-// ResolveEnvVars expands ${VAR} references in credential fields from the environment.
+// ResolveEnvVars expands $VAR and ${VAR} references in credential fields from the environment.
 // Only auth-related fields are resolved — credentials are never stored expanded.
 func ResolveEnvVars(cfg *Config) {
 	for i := range cfg.Services {
@@ -178,7 +182,12 @@ func ResolveEnvVars(cfg *Config) {
 
 func expandEnv(s string) string {
 	return envVarPattern.ReplaceAllStringFunc(s, func(match string) string {
-		varName := match[2 : len(match)-1]
+		var varName string
+		if strings.HasPrefix(match, "${") {
+			varName = match[2 : len(match)-1]
+		} else {
+			varName = match[1:] // strip leading $
+		}
 		if val, ok := os.LookupEnv(varName); ok {
 			return val
 		}

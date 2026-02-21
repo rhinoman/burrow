@@ -112,12 +112,9 @@ func (w *Wizard) configureLLM(cfg *config.Config) error {
 		if model == "" {
 			model = "llama3:latest"
 		}
-		name := w.prompt("  Provider name [local/" + model + "]: ")
-		if strings.TrimSpace(name) == "" {
-			name = "local/" + model
-		}
+		name := "local/" + model
 		cfg.LLM.Providers = append(cfg.LLM.Providers, config.ProviderConfig{
-			Name:     strings.TrimSpace(name),
+			Name:     name,
 			Type:     "ollama",
 			Endpoint: strings.TrimSpace(endpoint),
 			Model:    model,
@@ -125,19 +122,16 @@ func (w *Wizard) configureLLM(cfg *config.Config) error {
 		})
 
 	case "2":
-		apiKey := w.prompt("  OpenRouter API key (or ${ENV_VAR}): ")
+		apiKey := w.prompt("  OpenRouter API key (or $ENV_VAR): ")
 		model := w.prompt("  Model (e.g., openai/gpt-4): ")
 		model = strings.TrimSpace(model)
 		if model == "" {
 			model = "openai/gpt-4"
 		}
-		name := w.prompt("  Provider name [cloud/" + model + "]: ")
-		if strings.TrimSpace(name) == "" {
-			name = "cloud/" + model
-		}
+		name := "openrouter/" + model
 
 		// Spec §4.2: warn users when first configuring a remote LLM provider.
-		w.print(fmt.Sprintf("\n  ⚠ LLM provider '%s' sends synthesis data\n", strings.TrimSpace(name)))
+		w.print(fmt.Sprintf("\n  ⚠ LLM provider '%s' sends synthesis data\n", name))
 		w.print("    to openrouter.ai. Collected results will leave your\n")
 		w.print("    machine during synthesis.\n\n")
 		w.print("    For maximum privacy, use a local LLM provider.\n\n")
@@ -148,7 +142,7 @@ func (w *Wizard) configureLLM(cfg *config.Config) error {
 		}
 
 		cfg.LLM.Providers = append(cfg.LLM.Providers, config.ProviderConfig{
-			Name:    strings.TrimSpace(name),
+			Name:    name,
 			Type:    "openrouter",
 			APIKey:  strings.TrimSpace(apiKey),
 			Model:   model,
@@ -197,21 +191,21 @@ func (w *Wizard) configureFirstService(cfg *config.Config) error {
 	switch strings.TrimSpace(authChoice) {
 	case "1":
 		svc.Auth.Method = "api_key"
-		svc.Auth.Key = strings.TrimSpace(w.prompt("  API key (or ${ENV_VAR}): "))
+		svc.Auth.Key = strings.TrimSpace(w.prompt("  API key (or $ENV_VAR): "))
 		param := w.prompt("  Query param name [api_key]: ")
 		if strings.TrimSpace(param) != "" {
 			svc.Auth.KeyParam = strings.TrimSpace(param)
 		}
 	case "2":
 		svc.Auth.Method = "api_key_header"
-		svc.Auth.Key = strings.TrimSpace(w.prompt("  API key (or ${ENV_VAR}): "))
+		svc.Auth.Key = strings.TrimSpace(w.prompt("  API key (or $ENV_VAR): "))
 		param := w.prompt("  Header name [X-API-Key]: ")
 		if strings.TrimSpace(param) != "" {
 			svc.Auth.KeyParam = strings.TrimSpace(param)
 		}
 	case "3":
 		svc.Auth.Method = "bearer"
-		svc.Auth.Token = strings.TrimSpace(w.prompt("  Bearer token (or ${ENV_VAR}): "))
+		svc.Auth.Token = strings.TrimSpace(w.prompt("  Bearer token (or $ENV_VAR): "))
 	case "4":
 		svc.Auth.Method = "user_agent"
 		svc.Auth.Value = strings.TrimSpace(w.prompt("  User-Agent value: "))

@@ -57,6 +57,11 @@ type ollamaResponse struct {
 	Message ollamaMessage `json:"message"`
 }
 
+// Model returns the model name configured for this provider.
+func (o *OllamaProvider) Model() string {
+	return o.model
+}
+
 // Complete sends a chat completion request to Ollama.
 func (o *OllamaProvider) Complete(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 	messages := []ollamaMessage{
