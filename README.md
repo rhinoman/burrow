@@ -54,6 +54,40 @@ yesterday. Your compliance module may need updates.
 
 Every `[Draft]` generates text and hands it to your email client or clipboard. Burrow never sends anything. You review, edit, send.
 
+## Quickstart
+
+See a working pipeline in 60 seconds. No API keys needed.
+
+```
+$ go build ./cmd/gd
+$ ./gd quickstart
+
+  Created ~/.burrow/config.yaml
+  Created ~/.burrow/routines/weather.yaml
+
+  Testing weather.gov connectivity...
+    OK    weather-gov/forecast  (230ms)
+    OK    weather-gov/alerts    (180ms)
+
+  Generating report...
+  Report saved: ~/.burrow/reports/2026-02-20T063012-weather/
+
+  View the report:
+    gd weather
+    gd reports view weather
+
+  Customize the location:
+    Edit ~/.burrow/config.yaml to change the NWS grid point
+    Find your grid point: https://api.weather.gov/points/{lat},{lon}
+
+  Ready for real services?
+    gd init
+```
+
+Uses the free [NWS weather API](https://www.weather.gov/documentation/services-web-api) — no signup, no credentials. The quickstart creates a real config, a real routine, tests connectivity, and generates a real report you can view immediately.
+
+Ready to configure your own services? Run `gd init`.
+
 ## Setup
 
 ```
