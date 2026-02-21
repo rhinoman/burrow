@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 func TestExtractHeadings(t *testing.T) {
@@ -508,25 +509,41 @@ func TestCollapseAllKeybinding(t *testing.T) {
 }
 
 func TestIndicatorPrepend(t *testing.T) {
-	// Plain text
-	result := prependIndicator("Market Intelligence", false)
+	// Plain text — Tier 2 (TierNone)
+	result := prependIndicator("Market Intelligence", false, TierNone)
 	if result != "▼ Market Intelligence" {
 		t.Errorf("expected '▼ Market Intelligence', got %q", result)
 	}
 
-	result = prependIndicator("Market Intelligence", true)
+	result = prependIndicator("Market Intelligence", true, TierNone)
 	if result != "▸ Market Intelligence" {
 		t.Errorf("expected '▸ Market Intelligence', got %q", result)
 	}
 
-	// With ANSI prefix
+	// With ANSI prefix — Tier 2
 	ansiLine := "\x1b[1m\x1b[35mHeading Text\x1b[0m"
-	result = prependIndicator(ansiLine, false)
+	result = prependIndicator(ansiLine, false, TierNone)
 	if !strings.HasPrefix(result, "\x1b[1m\x1b[35m▼ ") {
 		t.Errorf("expected indicator after ANSI prefix, got %q", result)
 	}
 	if !strings.Contains(result, "Heading Text") {
 		t.Error("expected original text preserved")
+	}
+}
+
+func TestIndicatorPrependTier1(t *testing.T) {
+	// On Tier 1, indicators should contain ANSI color codes (amber #E0AF68)
+	result := prependIndicator("Section Title", false, TierKitty)
+	if !strings.Contains(result, "\x1b[") {
+		t.Error("expected ANSI styling in Tier 1 indicator")
+	}
+	if !strings.Contains(result, "Section Title") {
+		t.Error("expected original text preserved")
+	}
+
+	result = prependIndicator("Section Title", true, TierKitty)
+	if !strings.Contains(result, "\x1b[") {
+		t.Error("expected ANSI styling in Tier 1 collapsed indicator")
 	}
 }
 
@@ -625,6 +642,416 @@ func TestViewerPlayNoHandoff(t *testing.T) {
 	if viewer.statusMsg == "" {
 		t.Error("expected status message about no handoff")
 	}
+}
+
+// --- Link browser tests ---
+
+func TestExtractLinksBasic(t *testing.T) {
+	raw := "# Report\n\nCheck https://example.com for details.\n\nAlso see https://other.org/path here.\n"
+	links := extractLinks(raw)
+	if len(links) != 2 {
+		t.Fatalf("expected 2 links, got %d", len(links))
+	}
+	if links[0].url != "https://example.com" {
+		t.Errorf("expected first URL https://example.com, got %q", links[0].url)
+	}
+	if links[1].url != "https://other.org/path" {
+		t.Errorf("expected second URL https://other.org/path, got %q", links[1].url)
+	}
+}
+
+func TestExtractLinksMarkdownSyntax(t *testing.T) {
+	raw := "# Report\n\n[Dashboard](https://example.com/dash) is live.\n"
+	links := extractLinks(raw)
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+	if links[0].url != "https://example.com/dash" {
+		t.Errorf("expected URL https://example.com/dash, got %q", links[0].url)
+	}
+	if links[0].label != "Dashboard" {
+		t.Errorf("expected label 'Dashboard', got %q", links[0].label)
+	}
+}
+
+func TestExtractLinksDedup(t *testing.T) {
+	raw := "Link: https://example.com\nAgain: https://example.com\n"
+	links := extractLinks(raw)
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link after dedup, got %d", len(links))
+	}
+}
+
+func TestExtractLinksEmpty(t *testing.T) {
+	raw := "# Report\n\nNo links here.\n"
+	links := extractLinks(raw)
+	if len(links) != 0 {
+		t.Errorf("expected 0 links, got %d", len(links))
+	}
+}
+
+func TestViewerLinkToggle(t *testing.T) {
+	raw := "# Report\n\nSee https://example.com for info.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Press 'l' to open links
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	viewer := m.(Viewer)
+	if !viewer.showLinks {
+		t.Error("expected link overlay to be visible")
+	}
+
+	// Press 'esc' to close
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	viewer = m.(Viewer)
+	if viewer.showLinks {
+		t.Error("expected link overlay to be hidden")
+	}
+}
+
+func TestViewerLinkToggleNoLinks(t *testing.T) {
+	raw := "# Report\n\nNo links here.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	viewer := m.(Viewer)
+	if viewer.showLinks {
+		t.Error("expected overlay to not open when no links")
+	}
+	if viewer.statusMsg == "" {
+		t.Error("expected status message about no links")
+	}
+}
+
+func TestViewerLinkNavigation(t *testing.T) {
+	raw := "# Report\n\nSee https://one.com and https://two.com and https://three.com for details.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Open links
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	viewer := m.(Viewer)
+	if viewer.linkIdx != 0 {
+		t.Errorf("expected linkIdx 0, got %d", viewer.linkIdx)
+	}
+
+	// Navigate down
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	viewer = m.(Viewer)
+	if viewer.linkIdx != 1 {
+		t.Errorf("expected linkIdx 1, got %d", viewer.linkIdx)
+	}
+
+	// Navigate down again
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	viewer = m.(Viewer)
+	if viewer.linkIdx != 2 {
+		t.Errorf("expected linkIdx 2, got %d", viewer.linkIdx)
+	}
+
+	// Navigate past end — should stay at 2
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	viewer = m.(Viewer)
+	if viewer.linkIdx != 2 {
+		t.Errorf("expected linkIdx 2 (clamped), got %d", viewer.linkIdx)
+	}
+
+	// Navigate up
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	viewer = m.(Viewer)
+	if viewer.linkIdx != 1 {
+		t.Errorf("expected linkIdx 1 after up, got %d", viewer.linkIdx)
+	}
+}
+
+func TestViewerLinkCloseWithL(t *testing.T) {
+	raw := "# Report\n\nSee https://example.com here.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Open with 'l'
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	viewer := m.(Viewer)
+	if !viewer.showLinks {
+		t.Fatal("expected link overlay open")
+	}
+
+	// Close with 'l'
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	viewer = m.(Viewer)
+	if viewer.showLinks {
+		t.Error("expected link overlay closed with 'l'")
+	}
+}
+
+func TestViewerLinkYankReturnsCmd(t *testing.T) {
+	raw := "# Report\n\nSee https://example.com here.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Open links
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+
+	// Press 'y' to yank
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil {
+		t.Error("expected a tea.Cmd for clipboard copy")
+	}
+}
+
+func TestViewerLinkFooterHint(t *testing.T) {
+	raw := "# Report\n\nSee https://example.com here.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	viewer := m.(Viewer)
+
+	view := viewer.View()
+	if !strings.Contains(view, "l links") {
+		t.Error("expected 'l links' hint in footer when links exist")
+	}
+}
+
+func TestViewerLinkFooterHintAbsent(t *testing.T) {
+	raw := "# Report\n\nNo links here.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	viewer := m.(Viewer)
+
+	view := viewer.View()
+	if strings.Contains(view, "l links") {
+		t.Error("expected no 'l links' hint when no links exist")
+	}
+}
+
+func TestExtractLinksContextTruncation(t *testing.T) {
+	longLine := "See https://example.com in this very long line that should be truncated because it exceeds sixty characters total"
+	raw := "# Report\n\n" + longLine + "\n"
+	links := extractLinks(raw)
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+	if len(links[0].label) > 60 {
+		t.Errorf("expected label truncated to 60 chars, got %d", len(links[0].label))
+	}
+	if !strings.HasSuffix(links[0].label, "...") {
+		t.Error("expected truncated label to end with '...'")
+	}
+}
+
+// --- BubbleZone / clickable URL tests ---
+
+func TestWrapURLsForViewWithZones(t *testing.T) {
+	v := Viewer{imageTier: TierNone}
+	zm := zone.New()
+	defer zm.Close()
+	v.zones = zm
+	v.zoneState = &zoneState{urls: make(map[string]string)}
+
+	input := "Check https://example.com and https://other.org here."
+	result := v.wrapURLsForView(input)
+
+	// Zone marks should be present (invisible ANSI markers)
+	if result == input {
+		t.Error("expected zone marks to modify output")
+	}
+
+	// zoneState.urls should have 2 entries
+	if len(v.zoneState.urls) != 2 {
+		t.Fatalf("expected 2 zone URLs, got %d", len(v.zoneState.urls))
+	}
+	if v.zoneState.urls["url-0"] != "https://example.com" {
+		t.Errorf("expected url-0 = https://example.com, got %q", v.zoneState.urls["url-0"])
+	}
+	if v.zoneState.urls["url-1"] != "https://other.org" {
+		t.Errorf("expected url-1 = https://other.org, got %q", v.zoneState.urls["url-1"])
+	}
+}
+
+func TestWrapURLsForViewResolvesWrappedURL(t *testing.T) {
+	// Simulate Glamour word-wrapping a long URL across two lines.
+	// The regex matches only the first-line fragment; resolveFullURL
+	// should recover the full URL from v.links.
+	fullURL := "https://example.com/very/long/path/to/something/important"
+	v := Viewer{
+		imageTier: TierNone,
+		links:     []linkEntry{{url: fullURL}},
+	}
+	zm := zone.New()
+	defer zm.Close()
+	v.zones = zm
+	v.zoneState = &zoneState{urls: make(map[string]string)}
+
+	// Viewport output has the URL truncated at a line break
+	input := "See https://example.com/very/long/path/to/so\nmething/important for details."
+	v.wrapURLsForView(input)
+
+	// The zone should map to the full URL, not the fragment
+	if len(v.zoneState.urls) < 1 {
+		t.Fatal("expected at least 1 zone URL")
+	}
+	if v.zoneState.urls["url-0"] != fullURL {
+		t.Errorf("expected full URL %q, got %q", fullURL, v.zoneState.urls["url-0"])
+	}
+}
+
+func TestResolveFullURL(t *testing.T) {
+	v := Viewer{
+		links: []linkEntry{
+			{url: "https://example.com/a/b/c"},
+			{url: "https://other.org/path"},
+		},
+	}
+
+	// Exact match
+	if got := v.resolveFullURL("https://example.com/a/b/c"); got != "https://example.com/a/b/c" {
+		t.Errorf("exact match: expected full URL, got %q", got)
+	}
+
+	// Prefix match (truncated by line wrap)
+	if got := v.resolveFullURL("https://example.com/a/b"); got != "https://example.com/a/b/c" {
+		t.Errorf("prefix match: expected full URL, got %q", got)
+	}
+
+	// No match — returns input as-is
+	if got := v.resolveFullURL("https://unknown.com"); got != "https://unknown.com" {
+		t.Errorf("no match: expected input back, got %q", got)
+	}
+
+	// Ambiguous prefix — should pick the longest match
+	v2 := Viewer{
+		links: []linkEntry{
+			{url: "https://example.com/a"},
+			{url: "https://example.com/abc"},
+		},
+	}
+	if got := v2.resolveFullURL("https://example.com/a"); got != "https://example.com/abc" {
+		t.Errorf("ambiguous prefix: expected longest URL %q, got %q", "https://example.com/abc", got)
+	}
+}
+
+func TestWrapURLsForViewNoZones(t *testing.T) {
+	v := Viewer{imageTier: TierNone}
+	// zones is nil — should fall back to processHyperlinks (which is a no-op on TierNone)
+
+	input := "Visit https://example.com today."
+	result := v.wrapURLsForView(input)
+
+	if result != input {
+		t.Errorf("expected unchanged output on TierNone with nil zones, got %q", result)
+	}
+}
+
+func TestWrapURLsForViewTier1(t *testing.T) {
+	v := Viewer{imageTier: TierKitty}
+	zm := zone.New()
+	defer zm.Close()
+	v.zones = zm
+	v.zoneState = &zoneState{urls: make(map[string]string)}
+
+	input := "Visit https://example.com today."
+	result := v.wrapURLsForView(input)
+
+	// Should contain OSC 8 hyperlink (SetHyperlink includes \x1b])
+	if !strings.Contains(result, "\x1b]8;") {
+		t.Error("expected OSC 8 hyperlink escape in Tier 1 output")
+	}
+
+	// Should also have zone marks (invisible markers change the string)
+	if result == input {
+		t.Error("expected zone marks to modify output")
+	}
+}
+
+func TestViewerMouseClickNoHandoff(t *testing.T) {
+	raw := "# Report\n\nSee https://example.com for details.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+	// Initialize zones (simulating what RunViewer does)
+	v.zones = zone.New()
+	defer v.zones.Close()
+	v.zoneState = &zoneState{urls: map[string]string{"url-0": "https://example.com"}}
+	// No handoff configured
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Simulate left-click release — should set "No handoff configured" status
+	// Note: without actual Scan() positioning, the zone won't be InBounds,
+	// so we test the handler branching by checking it doesn't crash
+	m, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		X:      10, Y: 5,
+	})
+	_ = m.(Viewer) // should not panic
+}
+
+func TestViewerMouseClickOverlayBlocks(t *testing.T) {
+	raw := "# Report\n\nSee https://example.com for details.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+	v.zones = zone.New()
+	defer v.zones.Close()
+	v.zoneState = &zoneState{urls: map[string]string{"url-0": "https://example.com"}}
+	v.showLinks = true // overlay active
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Click should be ignored when overlay is shown (passed to viewport)
+	m, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		X:      10, Y: 5,
+	})
+	viewer := m.(Viewer)
+	// Status should NOT have "No handoff configured" since zone check was skipped
+	if viewer.statusMsg == "No handoff configured" {
+		t.Error("expected click to be ignored when overlay is active")
+	}
+}
+
+func TestViewerMouseWheelPassthrough(t *testing.T) {
+	raw := "# Report\n\nLine 1.\nLine 2.\nLine 3.\nLine 4.\nLine 5.\nLine 6.\nLine 7.\nLine 8.\nLine 9.\nLine 10.\n"
+	rendered, _ := RenderMarkdown(raw, 80)
+	v := newViewerWithRaw("Test", raw, rendered)
+	v.zones = zone.New()
+	defer v.zones.Close()
+	v.zoneState = &zoneState{urls: make(map[string]string)}
+
+	var m tea.Model = v
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 6})
+
+	// Send a mouse wheel down event — should not panic and should reach viewport
+	m, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+		X:      10, Y: 3,
+	})
+	_ = m.(Viewer) // should not panic
 }
 
 // mockProvider implements synthesis.Provider for testing.

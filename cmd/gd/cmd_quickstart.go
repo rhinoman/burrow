@@ -26,14 +26,14 @@ func init() {
 
 var quickstartCmd = &cobra.Command{
 	Use:   "quickstart",
-	Short: "Create a working demo with the free NWS weather API",
-	Long:  "Sets up a complete pipeline using weather.gov (no API key needed), runs it, and generates a real report — all in one command.",
+	Short: "Create a working demo with free public APIs (weather, earthquakes, news, AI papers)",
+	Long:  "Sets up a multi-source pipeline using 5 free APIs (NWS weather, Open-Meteo, USGS earthquakes, Hacker News, ArXiv), creates a demo profile, runs the pipeline, and generates a synthesized daily brief — all in one command. No API keys required.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQuickstart(cmd.Context())
 	},
 }
 
-// buildQuickstartConfig returns a Config using the free NWS weather API.
+// buildQuickstartConfig returns a Config using 5 free public APIs.
 func buildQuickstartConfig() *config.Config {
 	return &config.Config{
 		Services: []config.ServiceConfig{
@@ -48,17 +48,67 @@ func buildQuickstartConfig() *config.Config {
 				Tools: []config.ToolConfig{
 					{
 						Name:        "forecast",
-						Description: "7-day forecast for Denver/Boulder, CO",
+						Description: "7-day forecast for Anchorage, AK",
 						Method:      "GET",
-						Path:        "/gridpoints/BOU/62,60/forecast",
+						Path:        "/gridpoints/AER/143,236/forecast",
 					},
 					{
 						Name:        "alerts",
-						Description: "Active weather alerts for Colorado",
+						Description: "Active weather alerts for Alaska",
 						Method:      "GET",
-						Path:        "/alerts/active?area=CO",
+						Path:        "/alerts/active?area=AK",
 					},
 				},
+			},
+			{
+				Name:     "usgs-earthquakes",
+				Type:     "rest",
+				Endpoint: "https://earthquake.usgs.gov",
+				Auth: config.AuthConfig{
+					Method: "none",
+				},
+				Tools: []config.ToolConfig{
+					{
+						Name:        "recent",
+						Description: "Recent earthquakes near Anchorage, AK (M2.5+, 500km radius)",
+						Method:      "GET",
+						Path:        "/fdsnws/event/1/query?format=geojson&minmagnitude=2.5&latitude=61.22&longitude=-149.90&maxradiuskm=500&orderby=time&limit=20",
+					},
+				},
+			},
+			{
+				Name:     "open-meteo",
+				Type:     "rest",
+				Endpoint: "https://api.open-meteo.com",
+				Auth: config.AuthConfig{
+					Method: "none",
+				},
+				Tools: []config.ToolConfig{
+					{
+						Name:        "forecast",
+						Description: "Detailed hourly/daily weather for Anchorage, AK",
+						Method:      "GET",
+						Path:        "/v1/forecast?latitude=61.22&longitude=-149.90&hourly=temperature_2m,precipitation_probability,windspeed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,sunrise,sunset&temperature_unit=fahrenheit&windspeed_unit=mph&precipitation_unit=inch&timezone=America/Anchorage&forecast_days=3",
+					},
+				},
+			},
+			{
+				Name:     "hackernews",
+				Type:     "rss",
+				Endpoint: "https://hnrss.org/newest?points=100",
+				Auth: config.AuthConfig{
+					Method: "none",
+				},
+				MaxItems: 15,
+			},
+			{
+				Name:     "arxiv-ai",
+				Type:     "rss",
+				Endpoint: "https://rss.arxiv.org/rss/cs.AI",
+				Auth: config.AuthConfig{
+					Method: "none",
+				},
+				MaxItems: 10,
 			},
 		},
 		Privacy: config.PrivacyConfig{
@@ -68,42 +118,92 @@ func buildQuickstartConfig() *config.Config {
 	}
 }
 
-// buildQuickstartRoutine returns a Routine for the weather demo.
+// buildQuickstartRoutine returns a Routine for the multi-source daily brief.
 // When llmName is not "none", a synthesis system prompt is included.
+// The synthesis prompt uses {{profile.X}} template variables for demonstration.
 func buildQuickstartRoutine(llmName string) *pipeline.Routine {
 	routine := &pipeline.Routine{
-		Name: "weather",
+		Name: "daily-brief",
 		LLM:  llmName,
 		Report: pipeline.ReportConfig{
-			Title: "Weather Report — Denver/Boulder, CO",
+			Title: "Daily Brief — {{profile.name}}",
 		},
 		Sources: []pipeline.SourceConfig{
 			{
 				Service:      "weather-gov",
 				Tool:         "forecast",
-				ContextLabel: "7-Day Forecast",
+				ContextLabel: "NWS 7-Day Forecast — Anchorage",
 			},
 			{
 				Service:      "weather-gov",
 				Tool:         "alerts",
-				ContextLabel: "Active Weather Alerts",
+				ContextLabel: "NWS Active Alerts — Alaska",
+			},
+			{
+				Service:      "open-meteo",
+				Tool:         "forecast",
+				ContextLabel: "Detailed Weather — Anchorage",
+			},
+			{
+				Service:      "usgs-earthquakes",
+				Tool:         "recent",
+				ContextLabel: "Recent Earthquakes — Alaska Region",
+			},
+			{
+				Service:      "hackernews",
+				Tool:         "feed",
+				ContextLabel: "Hacker News — Top Stories",
+			},
+			{
+				Service:      "arxiv-ai",
+				Tool:         "feed",
+				ContextLabel: "ArXiv — Latest AI Papers",
 			},
 		},
 	}
 
 	if llmName != "none" {
 		routine.Synthesis = pipeline.SynthesisConfig{
-			System: "You are a weather analyst. Produce a clear, readable weather report from the\n" +
-				"raw forecast and alert data. Include:\n" +
-				"- Today's conditions and notable weather\n" +
-				"- Multi-day outlook highlighting significant changes\n" +
-				"- Any active alerts with recommended actions\n" +
-				"- A brief summary suitable for planning the day\n\n" +
-				"Use plain language. Skip technical grid metadata.",
+			System: "You are a personal research analyst for {{profile.name}},\n" +
+				"{{profile.description}}\n\n" +
+				"Produce a daily intelligence brief covering:\n" +
+				"1. Weather outlook for {{profile.location}} — combine NWS forecast with Open-Meteo data\n" +
+				"2. Recent seismic activity — highlight any notable earthquakes\n" +
+				"3. Tech news — summarize the most interesting stories from Hacker News\n" +
+				"4. AI research — highlight notable new papers from ArXiv\n\n" +
+				"Prioritize topics related to: {{profile.interests}}\n\n" +
+				"Format as a structured, scannable report with clear section headers.\n" +
+				"Include suggested actions where relevant (e.g., [Draft] follow-up, [Open] links).",
 		}
 	}
 
 	return routine
+}
+
+// buildQuickstartProfile returns a demo Profile for the quickstart.
+// Typed fields (Name, Description, Interests) are synced into Raw by
+// profile.Save. Only ad-hoc fields need to be set in Raw directly.
+func buildQuickstartProfile() *profile.Profile {
+	return &profile.Profile{
+		Name: "Demo User",
+		Description: "Tech professional based in Anchorage, Alaska.\n" +
+			"Interested in AI research, seismic activity monitoring,\n" +
+			"and Arctic weather patterns.",
+		Interests: []string{
+			"artificial intelligence",
+			"machine learning",
+			"earthquake monitoring",
+			"Arctic weather",
+			"technology trends",
+		},
+		Raw: map[string]interface{}{
+			// Ad-hoc fields — these demonstrate that profile.yaml is open-ended.
+			// Use {{profile.field_name}} in routines to reference any field.
+			"location":        "Anchorage, AK",
+			"focus_topics":    []interface{}{"transformer architectures", "seismic early warning"},
+			"alert_threshold": "M3.0+",
+		},
+	}
 }
 
 // setupQuickstartLLM guides the user through LLM provider configuration.
@@ -186,7 +286,7 @@ func setupQuickstartLLM(ctx context.Context, cfg *config.Config) (string, error)
 			fmt.Println(" OK")
 		} else {
 			fmt.Println(" failed")
-			fmt.Println("  Could not reach Ollama. Config saved — verify later with: gd routines test weather")
+			fmt.Println("  Could not reach Ollama. Config saved — verify later with: gd routines test daily-brief")
 		}
 
 		cfg.LLM.Providers = append(cfg.LLM.Providers, provCfg)
@@ -236,7 +336,7 @@ func setupQuickstartLLM(ctx context.Context, cfg *config.Config) (string, error)
 					fmt.Println(" OK")
 				} else {
 					fmt.Println(" failed")
-					fmt.Println("  Provider didn't respond. Config saved — verify later with: gd routines test weather")
+					fmt.Println("  Provider didn't respond. Config saved — verify later with: gd routines test daily-brief")
 				}
 			}
 		}
@@ -307,13 +407,20 @@ func runQuickstart(ctx context.Context) error {
 		}
 	}
 
+	// Build and save profile
+	prof := buildQuickstartProfile()
+	if err := profile.Save(burrowDir, prof); err != nil {
+		return fmt.Errorf("saving profile: %w", err)
+	}
+	fmt.Printf("  Created %s\n", filepath.Join(burrowDir, "profile.yaml"))
+
 	// Build and save routine
 	routine := buildQuickstartRoutine(llmName)
 	routinesDir := filepath.Join(burrowDir, "routines")
 	if err := pipeline.SaveRoutine(routinesDir, routine); err != nil {
 		return fmt.Errorf("saving routine: %w", err)
 	}
-	fmt.Printf("  Created %s\n", filepath.Join(routinesDir, "weather.yaml"))
+	fmt.Printf("  Created %s\n", filepath.Join(routinesDir, "daily-brief.yaml"))
 
 	// Resolve env vars on a copy for runtime use (saved config keeps ${VAR} references).
 	runtimeCfg := cfg.DeepCopy()
@@ -331,17 +438,12 @@ func runQuickstart(ctx context.Context) error {
 		return fmt.Errorf("configuring synthesizer: %w", err)
 	}
 
-	// Load user profile (optional)
-	prof, _ := profile.Load(burrowDir)
-
 	reportsDir := filepath.Join(burrowDir, "reports")
 	executor := pipeline.NewExecutor(registry, synth, reportsDir)
-	if prof != nil {
-		executor.SetProfile(prof)
-	}
+	executor.SetProfile(prof)
 
 	fmt.Println()
-	fmt.Println("  Testing weather.gov connectivity...")
+	fmt.Println("  Testing connectivity (5 services, 6 sources)...")
 
 	statuses := executor.TestSources(ctx, routine)
 	allOK := true
@@ -357,7 +459,7 @@ func runQuickstart(ctx context.Context) error {
 	if !allOK {
 		fmt.Println()
 		fmt.Println("  Some sources failed. Config files were created — retry with:")
-		fmt.Println("    gd routines run weather")
+		fmt.Println("    gd routines run daily-brief")
 		return nil
 	}
 
@@ -368,7 +470,7 @@ func runQuickstart(ctx context.Context) error {
 	report, err := executor.Run(ctx, routine)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Report generation failed: %v\n", err)
-		fmt.Println("  Config files were created. Retry with: gd routines run weather")
+		fmt.Println("  Config files were created. Retry with: gd routines run daily-brief")
 		return nil
 	}
 
@@ -377,12 +479,19 @@ func runQuickstart(ctx context.Context) error {
 	// Print next steps
 	fmt.Println()
 	fmt.Println("  View the report:")
-	fmt.Println("    gd weather")
-	fmt.Println("    gd reports view weather")
+	fmt.Println("    gd daily-brief")
+	fmt.Println("    gd reports view daily-brief")
 	fmt.Println()
-	fmt.Println("  Customize the location:")
-	fmt.Println("    Edit ~/.burrow/config.yaml to change the NWS grid point")
-	fmt.Println("    Find your grid point: https://api.weather.gov/points/{lat},{lon}")
+	fmt.Println("  What just happened:")
+	fmt.Println("    5 services queried independently (compartmentalized)")
+	fmt.Println("    Profile template expanded ({{profile.name}}, {{profile.location}}, ...)")
+	fmt.Println("    Results synthesized into a single daily brief")
+	fmt.Println()
+	fmt.Println("  Explore:")
+	fmt.Println("    gd profile                  — view your demo profile")
+	fmt.Println("    ~/.burrow/config.yaml        — service configuration")
+	fmt.Println("    ~/.burrow/routines/          — routine definitions")
+	fmt.Println("    ~/.burrow/profile.yaml       — profile (referenced via {{profile.X}})")
 	fmt.Println()
 	fmt.Println("  Ready for real services?")
 	fmt.Println("    gd init")

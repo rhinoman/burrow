@@ -3,6 +3,7 @@ package render
 import (
 	"context"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -10,11 +11,24 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
+	"github.com/muesli/termenv"
+
 	"github.com/jcadam/burrow/pkg/actions"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/synthesis"
 )
+
+// tier1Renderer is a lipgloss renderer that always outputs true color ANSI.
+// Used for Tier 1 styling where we know the terminal is capable.
+var tier1Renderer = newTier1Renderer()
+
+func newTier1Renderer() *lipgloss.Renderer {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.TrueColor)
+	return r
+}
 
 var headerStyle = lipgloss.NewStyle().
 	Bold(true).
@@ -31,6 +45,57 @@ var actionSelectedStyle = lipgloss.NewStyle().
 
 var actionNormalStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("252"))
+
+// linkEntry represents a URL found in the report.
+type linkEntry struct {
+	url   string
+	label string // markdown link text or surrounding context
+}
+
+// mdLinkPattern matches markdown links [text](url).
+var mdLinkPattern = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s)]+)\)`)
+
+// extractLinks pulls URLs from raw markdown, deduplicating by URL.
+// Markdown link syntax [text](url) uses the text as the label; bare URLs
+// use the surrounding line as context.
+func extractLinks(raw string) []linkEntry {
+	seen := make(map[string]bool)
+	var links []linkEntry
+
+	lines := strings.Split(raw, "\n")
+
+	// First pass: extract markdown link labels
+	mdLabels := make(map[string]string) // url -> label
+	for _, line := range lines {
+		for _, m := range mdLinkPattern.FindAllStringSubmatch(line, -1) {
+			mdLabels[m[2]] = m[1]
+		}
+	}
+
+	// Second pass: find all URLs in order
+	for _, line := range lines {
+		for _, url := range urlPattern.FindAllString(line, -1) {
+			if seen[url] {
+				continue
+			}
+			seen[url] = true
+
+			label := ""
+			if text, ok := mdLabels[url]; ok {
+				label = text
+			} else {
+				label = strings.TrimSpace(line)
+				if len(label) > 60 {
+					label = label[:57] + "..."
+				}
+			}
+
+			links = append(links, linkEntry{url: url, label: label})
+		}
+	}
+
+	return links
+}
 
 // --- Async message types ---
 
@@ -56,6 +121,13 @@ type headingPos struct {
 	collapsed bool
 }
 
+// zoneState holds mutable URL-to-zone mapping shared via pointer between
+// View() (writes) and Update() (reads). Pointer survives Bubble Tea's
+// value-receiver model copies.
+type zoneState struct {
+	urls map[string]string // zone ID → URL
+}
+
 // Viewer is a Bubble Tea model for scrollable report viewing with section
 // navigation and action execution.
 type Viewer struct {
@@ -76,12 +148,21 @@ type Viewer struct {
 	actionIdx   int
 	busy        bool // true while an async action is in flight
 
+	// Links
+	links     []linkEntry
+	showLinks bool
+	linkIdx   int
+
 	// Optional deps for action execution
 	handoff  *actions.Handoff
 	provider synthesis.Provider
 	ledger   *bcontext.Ledger
 	profile  *profile.Profile
 	ctx      context.Context
+
+	// Clickable URL zones (BubbleZone)
+	zones     *zone.Manager
+	zoneState *zoneState
 
 	// Chart rendering
 	reportDir   string    // report directory for locating chart PNGs
@@ -139,17 +220,23 @@ func NewViewer(title string, content string) Viewer {
 	}
 }
 
-// newViewerWithRaw creates a viewer with both raw markdown and rendered content.
-func newViewerWithRaw(title, raw, rendered string) Viewer {
-	v := Viewer{
+// buildViewer creates a Viewer from raw markdown and rendered content,
+// extracting headings, actions, and links.
+func buildViewer(title, raw, rendered string) Viewer {
+	return Viewer{
 		title:     title,
 		raw:       raw,
 		content:   rendered,
 		fullLines: strings.Split(rendered, "\n"),
+		headings:  extractHeadings(raw, rendered),
+		actions:   actions.ParseActions(raw),
+		links:     extractLinks(raw),
 	}
-	v.headings = extractHeadings(raw, rendered)
-	v.actions = actions.ParseActions(raw)
-	return v
+}
+
+// newViewerWithRaw creates a viewer with both raw markdown and rendered content.
+func newViewerWithRaw(title, raw, rendered string) Viewer {
+	return buildViewer(title, raw, rendered)
 }
 
 // Init initializes the viewer.
@@ -167,6 +254,8 @@ func (v Viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		footerHeight := 2
 		if v.showActions {
 			footerHeight = v.actionOverlayHeight() + 1
+		} else if v.showLinks {
+			footerHeight = v.linkOverlayHeight() + 1
 		}
 
 		if !v.ready {
@@ -178,6 +267,34 @@ func (v Viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.viewport.Width = msg.Width
 			v.viewport.Height = msg.Height - headerHeight - footerHeight
 		}
+
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+			if v.zones != nil && v.zoneState != nil &&
+				!v.showActions && !v.showLinks && !v.busy {
+				for zoneID, url := range v.zoneState.urls {
+					if zi := v.zones.Get(zoneID); zi != nil && zi.InBounds(msg) {
+						if v.handoff != nil {
+							handoff := v.handoff
+							clickedURL := url
+							v.busy = true
+							return v, func() tea.Msg {
+								err := handoff.OpenURL(clickedURL)
+								if err != nil {
+									return actionResultMsg{err: err}
+								}
+								return actionResultMsg{status: "Opened: " + clickedURL}
+							}
+						}
+						v.setStatus("No handoff configured")
+						return v, nil
+					}
+				}
+			}
+		}
+		// Pass all mouse events to viewport for wheel scrolling
+		v.viewport, cmd = v.viewport.Update(msg)
+		return v, cmd
 
 	case actionResultMsg:
 		v.busy = false
@@ -208,6 +325,9 @@ func (v Viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.showActions {
 			return v.updateActionOverlay(msg)
 		}
+		if v.showLinks {
+			return v.updateLinkOverlay(msg)
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return v, tea.Quit
@@ -231,6 +351,14 @@ func (v Viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.startDraftAction()
 		case "o":
 			return v.startOpenAction()
+		case "l":
+			if len(v.links) > 0 {
+				v.showLinks = true
+				v.linkIdx = 0
+			} else {
+				v.setStatus("No links found")
+			}
+			return v, nil
 		case "i":
 			return v.openFirstChart()
 		case "enter", "tab":
@@ -260,65 +388,170 @@ func (v Viewer) View() string {
 		return "Loading..."
 	}
 
-	header := headerStyle.Render(v.title)
+	header := buildHeader(v.title, v.viewport.Width, v.imageTier)
+
+	vpView := v.viewport.View()
+	vpView = v.wrapURLsForView(vpView) // zone marks + OSC 8
 
 	var footer string
 	if v.showActions {
 		footer = v.renderActionOverlay()
+	} else if v.showLinks {
+		footer = v.renderLinkOverlay()
 	} else {
-		status := ""
-		if v.busy {
-			status = " • Working..."
-		} else if v.statusMsg != "" && time.Now().Before(v.statusExp) {
-			status = " • " + v.statusMsg
-		}
-
-		hints := " %3.f%%"
-		if len(v.headings) > 0 {
-			hints += " │ n/N sections"
-			hints += " │ enter fold │ c/e all"
-		}
-		if len(v.actions) > 0 {
-			hints += " │ a actions"
-		}
-		if v.hasCharts && v.handoff != nil {
-			hints += " │ i open chart"
-		}
-		if v.hasPlayActions() {
-			hints += " │ p play"
-		}
-		hints += " │ q quit"
-
-		footer = footerStyle.Render(fmt.Sprintf(hints+status, v.viewport.ScrollPercent()*100))
+		footer = v.buildFooter()
 	}
 
-	return strings.Join([]string{header, "", v.viewport.View(), "", footer}, "\n")
+	fullView := strings.Join([]string{header, "", vpView, "", footer}, "\n")
+
+	if v.zones != nil {
+		return v.zones.Scan(fullView) // strips marks, records positions
+	}
+	return fullView
+}
+
+// buildHeader renders the title bar. On Tier 1 terminals, renders a full-width
+// styled banner with warm amber text on a dark background. On Tier 2, uses the
+// existing plain style.
+func buildHeader(title string, width int, tier ImageTier) string {
+	if tier == TierNone {
+		return headerStyle.Render(title)
+	}
+	return tier1Renderer.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#E0AF68")).
+		Background(lipgloss.Color("#1a1b26")).
+		PaddingLeft(1).
+		PaddingRight(1).
+		Width(width).
+		Render(title)
+}
+
+// buildFooter renders the footer hints. On Tier 1 terminals, key letters are
+// bold cyan, descriptions are muted, separators are dim, and status is amber.
+// On Tier 2, uses the existing plain gray style.
+func (v Viewer) buildFooter() string {
+	status := ""
+	if v.busy {
+		status = " • Working..."
+	} else if v.statusMsg != "" && time.Now().Before(v.statusExp) {
+		status = " • " + v.statusMsg
+	}
+
+	if v.imageTier == TierNone {
+		return v.buildFooterPlain(status)
+	}
+	return v.buildFooterStyled(status)
+}
+
+// buildFooterPlain renders the Tier 2 footer (unchanged from original).
+func (v Viewer) buildFooterPlain(status string) string {
+	hints := " %3.f%%"
+	if len(v.headings) > 0 {
+		hints += " │ n/N sections"
+		hints += " │ enter fold │ c/e all"
+	}
+	if len(v.actions) > 0 {
+		hints += " │ a actions"
+	}
+	if len(v.links) > 0 {
+		hints += " │ l links"
+	}
+	if v.hasCharts && v.handoff != nil {
+		hints += " │ i open chart"
+	}
+	if v.hasPlayActions() {
+		hints += " │ p play"
+	}
+	hints += " │ q quit"
+
+	return footerStyle.Render(fmt.Sprintf(hints+status, v.viewport.ScrollPercent()*100))
+}
+
+// buildFooterStyled renders the Tier 1 footer with colored key hints.
+func (v Viewer) buildFooterStyled(status string) string {
+	keyStyle := tier1Renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("#7DCFFF"))
+	descStyle := tier1Renderer.NewStyle().Foreground(lipgloss.Color("#565F89"))
+	sepStyle := tier1Renderer.NewStyle().Foreground(lipgloss.Color("#3B4261"))
+	statusStyle := tier1Renderer.NewStyle().Foreground(lipgloss.Color("#E0AF68"))
+
+	sep := sepStyle.Render(" │ ")
+
+	var parts []string
+	parts = append(parts, descStyle.Render(fmt.Sprintf(" %3.f%%", v.viewport.ScrollPercent()*100)))
+
+	if len(v.headings) > 0 {
+		parts = append(parts, keyStyle.Render("n")+descStyle.Render("/")+keyStyle.Render("N")+descStyle.Render(" sections"))
+		parts = append(parts, keyStyle.Render("enter")+descStyle.Render(" fold")+descStyle.Render(" ")+keyStyle.Render("c")+descStyle.Render("/")+keyStyle.Render("e")+descStyle.Render(" all"))
+	}
+	if len(v.actions) > 0 {
+		parts = append(parts, keyStyle.Render("a")+descStyle.Render(" actions"))
+	}
+	if len(v.links) > 0 {
+		parts = append(parts, keyStyle.Render("l")+descStyle.Render(" links"))
+	}
+	if v.hasCharts && v.handoff != nil {
+		parts = append(parts, keyStyle.Render("i")+descStyle.Render(" open chart"))
+	}
+	if v.hasPlayActions() {
+		parts = append(parts, keyStyle.Render("p")+descStyle.Render(" play"))
+	}
+	parts = append(parts, keyStyle.Render("q")+descStyle.Render(" quit"))
+
+	result := strings.Join(parts, sep)
+	if status != "" {
+		result += statusStyle.Render(status)
+	}
+	return result
 }
 
 // RunViewer launches the interactive viewer for a report.
 func RunViewer(title string, markdown string, opts ...ViewerOption) error {
-	rendered, err := RenderMarkdown(markdown, 0)
-	if err != nil {
-		return err
-	}
-
-	v := newViewerWithRaw(title, markdown, rendered)
+	// Apply options to a minimal viewer to get imageConfig before rendering
+	v := Viewer{title: title, raw: markdown}
 	for _, opt := range opts {
 		opt(&v)
 	}
 
-	// Process charts after options are applied (need reportDir and imageConfig)
+	// Detect tier early so it influences rendering style and hyperlinks
 	v.imageTier = DetectImageTier(v.imageConfig)
+
+	// Render markdown with tier-aware style
+	rendered, err := RenderMarkdown(markdown, 0, v.imageTier)
+	if err != nil {
+		return err
+	}
+
+	// Common init: content, fullLines, headings, actions, links
+	built := buildViewer(title, markdown, rendered)
+	// Carry over option-injected fields
+	built.handoff = v.handoff
+	built.provider = v.provider
+	built.ledger = v.ledger
+	built.profile = v.profile
+	built.ctx = v.ctx
+	built.reportDir = v.reportDir
+	built.imageConfig = v.imageConfig
+	built.imageTier = v.imageTier
+	v = built
+
+	// Production-only: charts, zones, mouse
 	v.content = processCharts(v.raw, v.content, v.reportDir, v.imageTier)
 	v.hasCharts = hasChartDirectives(v.raw)
 
-	// Refresh fullLines and headings after chart processing may have changed content
+	// Refresh fullLines and headings after chart processing
 	v.fullLines = strings.Split(v.content, "\n")
 	v.headings = extractHeadings(v.raw, v.content)
 
-	p := tea.NewProgram(v, tea.WithAltScreen())
+	// Initialize BubbleZone for clickable URLs in the viewport.
+	// OSC 8 hyperlinks and zone marks are applied in View() on each frame.
+	v.zones = zone.New()
+	v.zoneState = &zoneState{urls: make(map[string]string)}
+
+	p := tea.NewProgram(v, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	_, err = p.Run()
+	v.zones.Close()
 	return err
 }
 
@@ -429,10 +662,15 @@ func insertAfterANSIPrefix(line, insert string) string {
 }
 
 // prependIndicator adds a ▸ (collapsed) or ▼ (expanded) indicator to a heading line.
-func prependIndicator(line string, collapsed bool) string {
+// On Tier 1 terminals, the indicator is colored amber.
+func prependIndicator(line string, collapsed bool, tier ImageTier) string {
 	indicator := "▼ "
 	if collapsed {
 		indicator = "▸ "
+	}
+	if tier != TierNone {
+		indicatorStyle := tier1Renderer.NewStyle().Foreground(lipgloss.Color("#E0AF68"))
+		indicator = indicatorStyle.Render(indicator)
 	}
 	return insertAfterANSIPrefix(line, indicator)
 }
@@ -477,7 +715,7 @@ func (v *Viewer) rebuildContent() {
 		if hIdx, ok := headingAtLine[i]; ok {
 			h := v.headings[hIdx]
 			if h.level > 1 { // Only show indicators on collapsible headings
-				line = prependIndicator(line, h.collapsed)
+				line = prependIndicator(line, h.collapsed, v.imageTier)
 			}
 			v.headings[hIdx].viewLine = viewIdx
 		}
@@ -616,6 +854,106 @@ func (v Viewer) updateActionOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a := v.actions[v.actionIdx]
 		v.showActions = false
 		return v.startAction(a)
+	}
+	return v, nil
+}
+
+// --- Link overlay ---
+
+func (v *Viewer) linkOverlayHeight() int {
+	count := len(v.links)
+	if count > 8 {
+		count = 8
+	}
+	return count + 2
+}
+
+func (v Viewer) renderLinkOverlay() string {
+	var b strings.Builder
+	b.WriteString(footerStyle.Render(" Links (↑↓ navigate, enter open, y copy, esc close):"))
+	b.WriteString("\n")
+
+	maxShow := 8
+	total := len(v.links)
+	if total < maxShow {
+		maxShow = total
+	}
+
+	// Scrollable window that follows linkIdx
+	start := 0
+	if v.linkIdx >= maxShow {
+		start = v.linkIdx - maxShow + 1
+	}
+	end := start + maxShow
+	if end > total {
+		end = total
+		start = end - maxShow
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	for i := start; i < end; i++ {
+		link := v.links[i]
+		// Truncate URL for display
+		urlDisplay := link.url
+		if len(urlDisplay) > 50 {
+			urlDisplay = urlDisplay[:47] + "..."
+		}
+		label := ""
+		if link.label != "" && link.label != link.url {
+			label = " — " + link.label
+		}
+		line := fmt.Sprintf("  %s%s", urlDisplay, label)
+		if i == v.linkIdx {
+			b.WriteString(actionSelectedStyle.Render("▸ " + line))
+		} else {
+			b.WriteString(actionNormalStyle.Render("  " + line))
+		}
+		if i < end-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func (v Viewer) updateLinkOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "l":
+		v.showLinks = false
+		return v, nil
+	case "q", "ctrl+c":
+		return v, tea.Quit
+	case "up", "k":
+		if v.linkIdx > 0 {
+			v.linkIdx--
+		}
+		return v, nil
+	case "down", "j":
+		if v.linkIdx < len(v.links)-1 {
+			v.linkIdx++
+		}
+		return v, nil
+	case "enter":
+		link := v.links[v.linkIdx]
+		v.showLinks = false
+		if v.handoff == nil {
+			v.setStatus("No handoff configured")
+			return v, nil
+		}
+		handoff := v.handoff
+		url := link.url
+		v.busy = true
+		return v, func() tea.Msg {
+			err := handoff.OpenURL(url)
+			if err != nil {
+				return actionResultMsg{err: err}
+			}
+			return actionResultMsg{status: "Opened: " + url}
+		}
+	case "y":
+		url := v.links[v.linkIdx].url
+		return v, clipboardCmd(url, "Copied: "+url)
 	}
 	return v, nil
 }

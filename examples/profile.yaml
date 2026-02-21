@@ -2,24 +2,23 @@
 # Referenced in routines via {{profile.field_name}}
 # Edit directly or use: gd configure
 
-name: "Trivyn"
+name: "Demo User"
 description: |
-  Small geospatial intelligence firm. Government
-  contracting, mostly IC and DoD. Solo founder.
+  Tech professional based in Anchorage, Alaska.
+  Interested in AI research, seismic activity monitoring,
+  and Arctic weather patterns.
 interests:
-  - knowledge graphs
-  - geospatial analytics
-  - synthetic aperture radar
+  - artificial intelligence
+  - machine learning
+  - earthquake monitoring
+  - Arctic weather
+  - technology trends
 
 # Everything below is ad-hoc — add whatever fields you need.
 # Use {{profile.field_name}} in routines to reference them.
 
-competitors:
-  - Maxar
-  - BlackSky
-naics_codes:
-  - "541370"
-  - "541512"
-focus_agencies:
-  - NGA
-  - NRO
+location: "Anchorage, AK"
+focus_topics:
+  - transformer architectures
+  - seismic early warning
+alert_threshold: "M3.0+"
