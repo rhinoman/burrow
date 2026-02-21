@@ -3,6 +3,8 @@ package configure
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
@@ -144,11 +146,13 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 	// Check for config YAML block (```yaml ... ```)
 	var change *Change
 	if yamlBlock := extractYAMLBlock(response); yamlBlock != "" {
-		var proposed config.Config
-		if err := yaml.Unmarshal([]byte(yamlBlock), &proposed); err == nil {
+		// Unmarshal onto a copy of the current config so that fields the
+		// LLM omits retain their current values instead of being zeroed.
+		proposed := s.cfg.DeepCopy()
+		if err := yaml.Unmarshal([]byte(yamlBlock), proposed); err == nil {
 			change = &Change{
 				Description: extractDescription(response, yamlBlock),
-				Config:      &proposed,
+				Config:      proposed,
 				Raw:         yamlBlock,
 			}
 		}
@@ -236,6 +240,17 @@ func (s *Session) buildSystemPrompt() string {
 
 // ApplyChange validates and saves a proposed configuration change.
 func (s *Session) ApplyChange(change *Change) error {
+	// The LLM never sees real credentials — restore originals before
+	// validation so auth checks pass with the actual values.
+	restoreCredentials(s.cfg, change.Config)
+
+	// Detect when the LLM echoed back the current config without changes.
+	currentYAML, _ := yaml.Marshal(s.cfg)
+	proposedYAML, _ := yaml.Marshal(change.Config)
+	if string(currentYAML) == string(proposedYAML) {
+		return fmt.Errorf("no changes detected — the LLM echoed back the current config unchanged")
+	}
+
 	if err := config.Validate(change.Config); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -245,11 +260,62 @@ func (s *Session) ApplyChange(change *Change) error {
 		change.RemoteLLMWarning = true
 	}
 
+	// Best-effort backup before overwriting.
+	if current, err := yaml.Marshal(s.cfg); err == nil {
+		backupPath := filepath.Join(s.burrowDir, "config.yaml.bak")
+		os.WriteFile(backupPath, current, 0o644) //nolint:errcheck
+	}
+
 	if err := config.Save(s.burrowDir, change.Config); err != nil {
 		return fmt.Errorf("saving configuration: %w", err)
 	}
 	s.cfg = change.Config
 	return nil
+}
+
+// restoreCredentials copies credential values from src into dst for matching
+// services and providers. The LLM never sees real credentials (they're
+// redacted before being sent), so it can never produce them — it may echo
+// back "${REDACTED}", omit the field, or invent a placeholder. For any
+// service/provider that existed in the original config, we unconditionally
+// restore the original credential.
+func restoreCredentials(src, dst *config.Config) {
+	if src == nil {
+		return
+	}
+
+	// Index source services by name for O(1) lookup.
+	srcSvc := make(map[string]*config.ServiceConfig, len(src.Services))
+	for i := range src.Services {
+		srcSvc[src.Services[i].Name] = &src.Services[i]
+	}
+	for i := range dst.Services {
+		s, ok := srcSvc[dst.Services[i].Name]
+		if !ok {
+			continue
+		}
+		if s.Auth.Key != "" {
+			dst.Services[i].Auth.Key = s.Auth.Key
+		}
+		if s.Auth.Token != "" {
+			dst.Services[i].Auth.Token = s.Auth.Token
+		}
+	}
+
+	// Index source providers by name.
+	srcProv := make(map[string]*config.ProviderConfig, len(src.LLM.Providers))
+	for i := range src.LLM.Providers {
+		srcProv[src.LLM.Providers[i].Name] = &src.LLM.Providers[i]
+	}
+	for i := range dst.LLM.Providers {
+		s, ok := srcProv[dst.LLM.Providers[i].Name]
+		if !ok {
+			continue
+		}
+		if s.APIKey != "" {
+			dst.LLM.Providers[i].APIKey = s.APIKey
+		}
+	}
 }
 
 // hasNewRemoteProvider checks if the proposed config introduces a remote LLM

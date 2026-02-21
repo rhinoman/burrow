@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -193,6 +195,101 @@ func TestSessionApplyChange(t *testing.T) {
 	}
 	if len(loaded.LLM.Providers) != 1 {
 		t.Errorf("expected 1 provider after apply, got %d", len(loaded.LLM.Providers))
+	}
+}
+
+func TestApplyChangeRestoresRedactedCredentials(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "svc1",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth: config.AuthConfig{
+					Method: "api_key",
+					Key:    "${MY_API_KEY}",
+				},
+			},
+			{
+				Name:     "svc2",
+				Type:     "rest",
+				Endpoint: "https://other.example.com",
+				Auth: config.AuthConfig{
+					Method: "bearer",
+					Token:  "real-bearer-token",
+				},
+			},
+		},
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				{Name: "cloud/gpt", Type: "openrouter", APIKey: "${OPENROUTER_KEY}", Privacy: "remote"},
+			},
+		},
+	}
+	session := NewSession(dir, cfg, nil)
+
+	// Simulate what the LLM produces: credentials are mangled in various ways.
+	// svc1: LLM echoes back ${REDACTED}
+	// svc2: LLM omits the credential field entirely (empty string)
+	// provider: LLM omits the api_key
+	proposed := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "svc1",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth: config.AuthConfig{
+					Method: "api_key",
+					Key:    "${REDACTED}",
+				},
+			},
+			{
+				Name:     "svc2",
+				Type:     "rest",
+				Endpoint: "https://other.example.com",
+				Auth: config.AuthConfig{
+					Method: "bearer",
+					// Token omitted — LLM just left it out
+				},
+			},
+			{
+				Name:     "svc3",
+				Type:     "rest",
+				Endpoint: "https://new.example.com",
+				Auth:     config.AuthConfig{Method: "none"},
+			},
+		},
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				// APIKey omitted — LLM left it out
+				{Name: "cloud/gpt", Type: "openrouter", Privacy: "remote"},
+			},
+		},
+	}
+
+	change := &Change{Config: proposed, Description: "add svc3"}
+	if err := session.ApplyChange(change); err != nil {
+		t.Fatalf("ApplyChange: %v", err)
+	}
+
+	// Verify credentials were restored
+	loaded, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Services[0].Auth.Key != "${MY_API_KEY}" {
+		t.Errorf("svc1 api_key not restored: got %q", loaded.Services[0].Auth.Key)
+	}
+	if loaded.Services[1].Auth.Token != "real-bearer-token" {
+		t.Errorf("svc2 bearer token not restored: got %q", loaded.Services[1].Auth.Token)
+	}
+	if loaded.LLM.Providers[0].APIKey != "${OPENROUTER_KEY}" {
+		t.Errorf("provider api_key not restored: got %q", loaded.LLM.Providers[0].APIKey)
+	}
+	// New service should have no credentials
+	if loaded.Services[2].Auth.Key != "" || loaded.Services[2].Auth.Token != "" {
+		t.Error("new service should have no credentials")
 	}
 }
 
@@ -459,6 +556,59 @@ func TestSessionSpecAfterConfigChange(t *testing.T) {
 	}
 }
 
+func TestApplyChangeDetectsNoChanges(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "svc1",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth: config.AuthConfig{
+					Method: "api_key",
+					Key:    "${MY_API_KEY}",
+				},
+			},
+		},
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				{Name: "local/llama", Type: "ollama", Model: "llama3", Privacy: "local"},
+			},
+		},
+	}
+	session := NewSession(dir, cfg, nil)
+
+	// Simulate the LLM echoing back the same config with redacted credentials.
+	// After restoreCredentials, this should be identical to the original.
+	proposed := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "svc1",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth: config.AuthConfig{
+					Method: "api_key",
+					Key:    "${REDACTED}",
+				},
+			},
+		},
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				{Name: "local/llama", Type: "ollama", Model: "llama3", Privacy: "local"},
+			},
+		},
+	}
+
+	change := &Change{Config: proposed, Description: "echoed config"}
+	err := session.ApplyChange(change)
+	if err == nil {
+		t.Fatal("expected error for unchanged config, got nil")
+	}
+	if !strings.Contains(err.Error(), "no changes detected") {
+		t.Errorf("expected 'no changes detected' error, got: %v", err)
+	}
+}
+
 func TestSessionSpecPrunedAfterServiceRemoval(t *testing.T) {
 	specBody := `{"openapi": "3.0.0", "info": {"title": "Removable API"}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -497,5 +647,143 @@ func TestSessionSpecPrunedAfterServiceRemoval(t *testing.T) {
 	}
 	if strings.Contains(provider.systemPrompt, "API Specification") {
 		t.Error("no spec context expected after service removal")
+	}
+}
+
+func TestApplyChangePartialYAMLPreservesConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// Full config with services, LLM providers, privacy, and rendering.
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "existing-svc",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth:     config.AuthConfig{Method: "api_key", Key: "${MY_KEY}"},
+			},
+		},
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				{Name: "local/llama", Type: "ollama", Model: "llama3", Privacy: "local", Endpoint: "http://localhost:11434"},
+			},
+		},
+		Privacy: config.PrivacyConfig{
+			StripAttributionForRemote: true,
+			MinimizeRequests:          true,
+		},
+		Rendering: config.RenderingConfig{Images: "auto"},
+	}
+
+	// LLM returns YAML with only a services change (adds a new service).
+	partialYAML := `I'll add the new service for you.
+
+` + "```yaml" + `
+services:
+  - name: existing-svc
+    type: rest
+    endpoint: https://api.example.com
+    auth:
+      method: api_key
+      key: ${REDACTED}
+  - name: new-svc
+    type: rest
+    endpoint: https://new.example.com
+    auth:
+      method: none
+` + "```" + `
+
+Done!`
+
+	provider := &fakeProvider{response: partialYAML}
+	session := NewSession(dir, cfg, provider)
+
+	_, change, _, err := session.ProcessMessage(context.Background(), "Add a new service")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if change == nil {
+		t.Fatal("expected a change")
+	}
+
+	// Apply the change.
+	if err := session.ApplyChange(change); err != nil {
+		t.Fatalf("ApplyChange: %v", err)
+	}
+
+	// Load and verify the saved config preserves non-service sections.
+	loaded, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Services should be updated.
+	if len(loaded.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(loaded.Services))
+	}
+	if loaded.Services[1].Name != "new-svc" {
+		t.Errorf("expected new-svc, got %q", loaded.Services[1].Name)
+	}
+
+	// LLM providers must be preserved (the partial YAML didn't mention them).
+	if len(loaded.LLM.Providers) != 1 {
+		t.Fatalf("expected 1 LLM provider preserved, got %d", len(loaded.LLM.Providers))
+	}
+	if loaded.LLM.Providers[0].Name != "local/llama" {
+		t.Errorf("LLM provider name lost: got %q", loaded.LLM.Providers[0].Name)
+	}
+
+	// Privacy settings must be preserved.
+	if !loaded.Privacy.StripAttributionForRemote {
+		t.Error("privacy.strip_attribution_for_remote was lost")
+	}
+	if !loaded.Privacy.MinimizeRequests {
+		t.Error("privacy.minimize_requests was lost")
+	}
+
+	// Rendering must be preserved.
+	if loaded.Rendering.Images != "auto" {
+		t.Errorf("rendering.images lost: got %q", loaded.Rendering.Images)
+	}
+
+	// Credential must be restored.
+	if loaded.Services[0].Auth.Key != "${MY_KEY}" {
+		t.Errorf("credential not restored: got %q", loaded.Services[0].Auth.Key)
+	}
+}
+
+func TestApplyChangeCreatesBackup(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				{Name: "local/llama", Type: "ollama", Model: "llama3", Privacy: "local"},
+			},
+		},
+	}
+	session := NewSession(dir, cfg, nil)
+
+	proposed := cfg.DeepCopy()
+	proposed.Services = []config.ServiceConfig{
+		{Name: "new-svc", Type: "rest", Endpoint: "https://example.com", Auth: config.AuthConfig{Method: "none"}},
+	}
+
+	change := &Change{Config: proposed, Description: "add service"}
+	if err := session.ApplyChange(change); err != nil {
+		t.Fatalf("ApplyChange: %v", err)
+	}
+
+	backupPath := filepath.Join(dir, "config.yaml.bak")
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("backup file not created: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("backup file is empty")
+	}
+	// Backup should contain the original config's LLM provider.
+	if !strings.Contains(string(data), "local/llama") {
+		t.Error("backup does not contain original config data")
 	}
 }
