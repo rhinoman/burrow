@@ -13,6 +13,7 @@ import (
 	"github.com/jcadam/burrow/pkg/config"
 	"github.com/jcadam/burrow/pkg/contacts"
 	bcontext "github.com/jcadam/burrow/pkg/context"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/render"
 	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
@@ -26,6 +27,7 @@ type interactiveSession struct {
 	registry  *services.Registry
 	ledger    *bcontext.Ledger
 	contacts  *contacts.Store
+	profile   *profile.Profile
 	provider  synthesis.Provider
 	handoff   *actions.Handoff
 }
@@ -71,6 +73,9 @@ func runInteractive(ctx context.Context) error {
 	// intentionally excluded to maintain compartmentalization.
 	provider := findLocalProvider(cfg)
 
+	// Load user profile (optional)
+	prof, _ := profile.Load(burrowDir)
+
 	// Create handoff
 	handoff := actions.NewHandoff(cfg.Apps)
 
@@ -80,6 +85,7 @@ func runInteractive(ctx context.Context) error {
 		registry:  registry,
 		ledger:    ledger,
 		contacts:  contactStore,
+		profile:   prof,
 		provider:  provider,
 		handoff:   handoff,
 	}
@@ -91,6 +97,9 @@ func runInteractive(ctx context.Context) error {
 		if n := contactStore.Count(); n > 0 {
 			fmt.Printf(" . %d contact(s)", n)
 		}
+	}
+	if prof != nil && prof.Name != "" {
+		fmt.Printf(" . Profile: %s", prof.Name)
 	}
 	fmt.Println()
 	if provider != nil {
@@ -156,6 +165,9 @@ func (s *interactiveSession) printSources() {
 	fmt.Println()
 	for _, svc := range s.cfg.Services {
 		fmt.Printf("    %s (%s)\n", svc.Name, svc.Endpoint)
+		if svc.Type == "rss" {
+			fmt.Printf("      - feed: RSS/Atom feed\n")
+		}
 		for _, tool := range svc.Tools {
 			desc := tool.Description
 			if desc == "" {
@@ -198,7 +210,7 @@ func (s *interactiveSession) handleView(routine string) {
 		title = report.Routine + " — " + report.Date
 	}
 
-	opts := viewerOptions(s.cfg)
+	opts := viewerOptions(s.cfg, s.profile)
 	if s.ledger != nil {
 		opts = append(opts, render.WithLedger(s.ledger))
 	}
@@ -268,7 +280,7 @@ func (s *interactiveSession) handleAsk(ctx context.Context, question string) {
 			userPrompt.WriteString("\n\nContext data:\n\n")
 			userPrompt.WriteString(contextData)
 
-			response, err := s.provider.Complete(ctx, askSystemPrompt, userPrompt.String())
+			response, err := s.provider.Complete(ctx, buildAskSystemPrompt(s.profile), userPrompt.String())
 			if err != nil {
 				fmt.Printf("  LLM error: %v\n", err)
 				return
@@ -332,7 +344,7 @@ func (s *interactiveSession) handleDraft(ctx context.Context, scanner *bufio.Sca
 	}
 
 	fmt.Println("  Generating draft...")
-	draft, err := actions.GenerateDraft(ctx, s.provider, instruction, contextData)
+	draft, err := actions.GenerateDraft(ctx, s.provider, instruction, contextData, s.profile)
 	if err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return

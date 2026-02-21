@@ -32,6 +32,16 @@ services:
         path: /alerts/active?area=CO
         # Change "CO" to your state abbreviation
 
+  # --- RSS feeds ---
+  #
+  # - name: hacker-news
+  #   type: rss
+  #   endpoint: https://hnrss.org/newest?points=100
+  #   auth:
+  #     method: none
+  #   max_items: 15
+  #   cache_ttl: 1800
+
   # --- Add real services below ---
   #
   # - name: sam-gov

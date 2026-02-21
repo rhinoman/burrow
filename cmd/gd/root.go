@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/render"
 	"github.com/spf13/cobra"
 )
@@ -42,6 +43,7 @@ func viewRoutineShortcut(name string) error {
 	}
 
 	cfg, _ := loadConfigQuiet(burrowDir)
-	opts := viewerOptions(cfg)
+	prof, _ := profile.Load(burrowDir)
+	opts := viewerOptions(cfg, prof)
 	return render.RunViewer(title, report.Markdown, opts...)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/synthesis"
 )
 
@@ -26,7 +27,25 @@ Subject: [subject line]
 Keep the tone professional but natural. Be concise.`
 
 // GenerateDraft uses an LLM to generate a communication draft.
-func GenerateDraft(ctx context.Context, provider synthesis.Provider, instruction string, contextData string) (*Draft, error) {
+// The profile parameter is optional — pass nil when no profile is available.
+func GenerateDraft(ctx context.Context, provider synthesis.Provider, instruction string, contextData string, p *profile.Profile) (*Draft, error) {
+	systemPrompt := draftSystemPrompt
+	if p != nil {
+		var extra strings.Builder
+		if p.Name != "" {
+			extra.WriteString("\nDrafting on behalf of ")
+			extra.WriteString(p.Name)
+			extra.WriteString(".")
+		}
+		if p.Description != "" {
+			extra.WriteString(" ")
+			extra.WriteString(strings.TrimSpace(p.Description))
+		}
+		if extra.Len() > 0 {
+			systemPrompt += extra.String()
+		}
+	}
+
 	var userPrompt strings.Builder
 	userPrompt.WriteString("Instruction: ")
 	userPrompt.WriteString(instruction)
@@ -35,7 +54,7 @@ func GenerateDraft(ctx context.Context, provider synthesis.Provider, instruction
 		userPrompt.WriteString(contextData)
 	}
 
-	raw, err := provider.Complete(ctx, draftSystemPrompt, userPrompt.String())
+	raw, err := provider.Complete(ctx, systemPrompt, userPrompt.String())
 	if err != nil {
 		return nil, err
 	}

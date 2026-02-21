@@ -95,7 +95,7 @@ func runConversationalConfigure(ctx context.Context, session *configure.Session)
 			continue
 		}
 
-		response, change, err := session.ProcessMessage(ctx, input)
+		response, change, profChange, err := session.ProcessMessage(ctx, input)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 			continue
@@ -103,8 +103,22 @@ func runConversationalConfigure(ctx context.Context, session *configure.Session)
 
 		fmt.Println("\n  " + response + "\n")
 
+		if profChange != nil {
+			fmt.Println("  Apply profile change? (y/n)")
+			fmt.Print("  > ")
+			if scanner.Scan() && scanner.Text() == "y" {
+				if err := session.ApplyProfileChange(profChange); err != nil {
+					fmt.Fprintf(os.Stderr, "  Error applying profile: %v\n", err)
+				} else {
+					fmt.Println("  Profile updated.")
+				}
+			} else {
+				fmt.Println("  Profile change discarded.")
+			}
+		}
+
 		if change != nil {
-			fmt.Println("  Apply this change? (y/n)")
+			fmt.Println("  Apply this configuration change? (y/n)")
 			fmt.Print("  > ")
 			if scanner.Scan() && scanner.Text() == "y" {
 				if err := session.ApplyChange(change); err != nil {

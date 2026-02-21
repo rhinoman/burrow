@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/synthesis"
 	"gopkg.in/yaml.v3"
 )
@@ -24,22 +25,34 @@ type Change struct {
 	RemoteLLMWarning bool   // Set by ApplyChange when a new remote provider is added
 }
 
+// ProfileChange represents a proposed profile change.
+type ProfileChange struct {
+	Description string
+	Profile     *profile.Profile
+	Raw         string // The YAML block from LLM output
+}
+
 // Session provides LLM-driven conversational configuration.
 type Session struct {
-	burrowDir string
-	cfg       *config.Config
-	provider  synthesis.Provider
-	history   []Message
-	specCache map[string]*FetchedSpec // keyed by service name
+	burrowDir  string
+	cfg        *config.Config
+	profileCfg *profile.Profile
+	provider   synthesis.Provider
+	history    []Message
+	specCache  map[string]*FetchedSpec // keyed by service name
 }
 
 // NewSession creates a new conversational configuration session.
 func NewSession(burrowDir string, cfg *config.Config, provider synthesis.Provider) *Session {
+	// Load existing profile (best-effort).
+	prof, _ := profile.Load(burrowDir)
+
 	return &Session{
-		burrowDir: burrowDir,
-		cfg:       cfg,
-		provider:  provider,
-		specCache: make(map[string]*FetchedSpec),
+		burrowDir:  burrowDir,
+		cfg:        cfg,
+		profileCfg: prof,
+		provider:   provider,
+		specCache:  make(map[string]*FetchedSpec),
 	}
 }
 
@@ -48,10 +61,16 @@ const configSystemPrompt = `You are Burrow's configuration assistant. Help the u
 Current configuration (YAML):
 %s
 
+%s
+
 Rules:
 - When the user wants to change config, output the COMPLETE updated config in a YAML code block (` + "```yaml" + ` ... ` + "```" + `)
+- When the user describes themselves, their interests, competitors, or industry, propose profile.yaml changes in a ` + "```yaml profile" + ` block (distinct from the config ` + "```yaml" + ` block)
+- profile.yaml stores: name, description, interests (list), and any user-defined fields (competitors, naics_codes, focus_agencies, etc.)
+- Profile fields are referenced in routines via {{profile.field_name}} template syntax
 - Use ${ENV_VAR} syntax for credentials — never store raw secrets
-- Valid service types: rest, mcp
+- Valid service types: rest, mcp, rss
+- RSS services use type: rss with the feed URL as endpoint. No tools config needed — they auto-provide a 'feed' tool. Optional: max_items (default 20)
 - Valid auth methods: api_key, api_key_header, bearer, user_agent, none
 - Valid LLM types: ollama, openrouter, llamacpp, passthrough
 - Valid privacy values: local, remote
@@ -83,8 +102,8 @@ Present available endpoints and let the user choose which ones to map as tools.
 Each tool needs: name, description, method, path, and params (with name, type, maps_to).`
 
 // ProcessMessage sends a user message and returns the assistant's response
-// along with any proposed config change (if YAML was found in the response).
-func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *Change, error) {
+// along with any proposed config change and/or profile change.
+func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *Change, *ProfileChange, error) {
 	s.history = append(s.history, Message{Role: "user", Content: userMsg})
 
 	// Build the full conversation as a user prompt
@@ -99,30 +118,52 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 	systemPrompt := s.buildSystemPrompt()
 	response, err := s.provider.Complete(ctx, systemPrompt, conversationBuilder.String())
 	if err != nil {
-		return "", nil, fmt.Errorf("LLM error: %w", err)
+		return "", nil, nil, fmt.Errorf("LLM error: %w", err)
 	}
 
 	s.history = append(s.history, Message{Role: "assistant", Content: response})
 
-	// Check for YAML block in response
-	yamlBlock := extractYAMLBlock(response)
-	if yamlBlock == "" {
-		return response, nil, nil
+	// Check for profile YAML block first (```yaml profile ... ```)
+	var profChange *ProfileChange
+	if profileBlock := extractProfileYAMLBlock(response); profileBlock != "" {
+		var p profile.Profile
+		if err := yaml.Unmarshal([]byte(profileBlock), &p); err == nil {
+			// Also unmarshal into raw map for ad-hoc fields
+			var raw map[string]interface{}
+			if err := yaml.Unmarshal([]byte(profileBlock), &raw); err == nil {
+				p.Raw = raw
+			}
+			profChange = &ProfileChange{
+				Description: extractDescription(response, profileBlock),
+				Profile:     &p,
+				Raw:         profileBlock,
+			}
+		}
 	}
 
-	// Try to parse the YAML as a config
-	var proposed config.Config
-	if err := yaml.Unmarshal([]byte(yamlBlock), &proposed); err != nil {
-		return response, nil, nil // Invalid YAML — just return the text
+	// Check for config YAML block (```yaml ... ```)
+	var change *Change
+	if yamlBlock := extractYAMLBlock(response); yamlBlock != "" {
+		var proposed config.Config
+		if err := yaml.Unmarshal([]byte(yamlBlock), &proposed); err == nil {
+			change = &Change{
+				Description: extractDescription(response, yamlBlock),
+				Config:      &proposed,
+				Raw:         yamlBlock,
+			}
+		}
 	}
 
-	change := &Change{
-		Description: extractDescription(response, yamlBlock),
-		Config:      &proposed,
-		Raw:         yamlBlock,
-	}
+	return response, change, profChange, nil
+}
 
-	return response, change, nil
+// ApplyProfileChange saves a proposed profile change.
+func (s *Session) ApplyProfileChange(change *ProfileChange) error {
+	if err := profile.Save(s.burrowDir, change.Profile); err != nil {
+		return fmt.Errorf("saving profile: %w", err)
+	}
+	s.profileCfg = change.Profile
+	return nil
 }
 
 // fetchServiceSpecs fetches specs for any configured services with a spec URL
@@ -165,11 +206,23 @@ func (s *Session) fetchServiceSpecs(ctx context.Context) {
 	}
 }
 
-// buildSystemPrompt constructs the system prompt with current config and any fetched specs.
+// buildSystemPrompt constructs the system prompt with current config, profile, and any fetched specs.
 func (s *Session) buildSystemPrompt() string {
 	redacted := redactConfig(s.cfg)
 	cfgYAML, _ := yaml.Marshal(redacted)
-	prompt := fmt.Sprintf(configSystemPrompt, string(cfgYAML))
+
+	var profileContext string
+	if s.profileCfg != nil && s.profileCfg.Raw != nil {
+		profYAML, err := yaml.Marshal(s.profileCfg.Raw)
+		if err == nil {
+			profileContext = "Current profile (profile.yaml):\n" + string(profYAML)
+		}
+	}
+	if profileContext == "" {
+		profileContext = "No profile configured yet. The user can create one by describing themselves."
+	}
+
+	prompt := fmt.Sprintf(configSystemPrompt, string(cfgYAML), profileContext)
 
 	// Append spec context for successfully fetched specs.
 	for svcName, spec := range s.specCache {
@@ -239,8 +292,9 @@ func redactConfig(cfg *config.Config) *config.Config {
 	return c
 }
 
-// extractYAMLBlock finds the first ```yaml ... ``` block in text.
-// Handles indented code blocks by searching line-by-line for the markers.
+// extractYAMLBlock finds the first ```yaml ... ``` block in text (not ```yaml profile).
+// Uses exact string equality on trimmed lines, so variant whitespace like
+// "```yaml  profile" would not match either extractor and be silently dropped.
 func extractYAMLBlock(text string) string {
 	lines := strings.Split(text, "\n")
 	inBlock := false
@@ -249,7 +303,32 @@ func extractYAMLBlock(text string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !inBlock {
-			if trimmed == "```yaml" || trimmed == "```yml" {
+			// Match ```yaml or ```yml but NOT ```yaml profile
+			if (trimmed == "```yaml" || trimmed == "```yml") {
+				inBlock = true
+				continue
+			}
+		} else {
+			if trimmed == "```" {
+				return strings.TrimSpace(content.String())
+			}
+			content.WriteString(line)
+			content.WriteByte('\n')
+		}
+	}
+	return ""
+}
+
+// extractProfileYAMLBlock finds the first ```yaml profile ... ``` block in text.
+func extractProfileYAMLBlock(text string) string {
+	lines := strings.Split(text, "\n")
+	inBlock := false
+	var content strings.Builder
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock {
+			if trimmed == "```yaml profile" || trimmed == "```yml profile" {
 				inBlock = true
 				continue
 			}

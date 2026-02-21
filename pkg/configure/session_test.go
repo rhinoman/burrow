@@ -69,12 +69,54 @@ func TestExtractYAMLBlock(t *testing.T) {
 	}
 }
 
+func TestExtractProfileYAMLBlock(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "profile yaml block",
+			input: "Here's your profile:\n```yaml profile\nname: Trivyn\ninterests:\n  - geo\n```\nDone!",
+			want:  "name: Trivyn\ninterests:\n  - geo",
+		},
+		{
+			name:  "regular yaml not matched",
+			input: "```yaml\nservices:\n  - name: test\n```",
+			want:  "",
+		},
+		{
+			name:  "no block",
+			input: "Just some text.",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractProfileYAMLBlock(tt.input)
+			if got != tt.want {
+				t.Errorf("extractProfileYAMLBlock() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractYAMLBlockDoesNotMatchProfile(t *testing.T) {
+	// A ```yaml profile block should NOT be matched by extractYAMLBlock
+	input := "```yaml profile\nname: Trivyn\n```"
+	got := extractYAMLBlock(input)
+	if got != "" {
+		t.Errorf("extractYAMLBlock matched profile block: %q", got)
+	}
+}
+
 func TestSessionProcessMessageNoYAML(t *testing.T) {
 	provider := &fakeProvider{response: "Sure, I can help with that. What services do you want to add?"}
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	response, change, err := session.ProcessMessage(context.Background(), "Help me configure Burrow")
+	response, change, _, err := session.ProcessMessage(context.Background(), "Help me configure Burrow")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -105,7 +147,7 @@ This configures a local Ollama provider.`
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	response, change, err := session.ProcessMessage(context.Background(), "Add Ollama as my LLM provider")
+	response, change, _, err := session.ProcessMessage(context.Background(), "Add Ollama as my LLM provider")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -249,8 +291,8 @@ func TestSessionHistory(t *testing.T) {
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	session.ProcessMessage(context.Background(), "first message")
-	session.ProcessMessage(context.Background(), "second message")
+	session.ProcessMessage(context.Background(), "first message")   //nolint:errcheck
+	session.ProcessMessage(context.Background(), "second message") //nolint:errcheck
 
 	if len(session.history) != 4 { // 2 user + 2 assistant
 		t.Errorf("expected 4 history entries, got %d", len(session.history))
@@ -292,7 +334,7 @@ func TestSessionFetchesSpecOnFirstMessage(t *testing.T) {
 	}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	_, _, err := session.ProcessMessage(context.Background(), "Show me the petstore endpoints")
+	_, _, _, err := session.ProcessMessage(context.Background(), "Show me the petstore endpoints")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -328,8 +370,8 @@ func TestSessionSpecCachedAcrossMessages(t *testing.T) {
 	}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	session.ProcessMessage(context.Background(), "first")
-	session.ProcessMessage(context.Background(), "second")
+	session.ProcessMessage(context.Background(), "first")  //nolint:errcheck
+	session.ProcessMessage(context.Background(), "second") //nolint:errcheck
 
 	if count := requestCount.Load(); count != 1 {
 		t.Errorf("expected 1 spec fetch, got %d", count)
@@ -358,7 +400,7 @@ func TestSessionSpecFetchErrorDoesNotBlock(t *testing.T) {
 	}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	resp, _, err := session.ProcessMessage(context.Background(), "help")
+	resp, _, _, err := session.ProcessMessage(context.Background(), "help")
 	if err != nil {
 		t.Fatalf("ProcessMessage should succeed despite spec error: %v", err)
 	}
@@ -367,7 +409,7 @@ func TestSessionSpecFetchErrorDoesNotBlock(t *testing.T) {
 	}
 
 	// Call again — error should be cached, not retried.
-	session.ProcessMessage(context.Background(), "again")
+	session.ProcessMessage(context.Background(), "again") //nolint:errcheck
 	if count := requestCount.Load(); count != 1 {
 		t.Errorf("expected 1 spec fetch attempt (error cached), got %d", count)
 	}
@@ -391,7 +433,7 @@ func TestSessionSpecAfterConfigChange(t *testing.T) {
 	session := NewSession(t.TempDir(), cfg, provider)
 
 	// First message — no specs.
-	session.ProcessMessage(context.Background(), "hello")
+	session.ProcessMessage(context.Background(), "hello") //nolint:errcheck
 	if strings.Contains(provider.systemPrompt, "API Specification") {
 		t.Error("no spec expected before service added")
 	}
@@ -411,7 +453,7 @@ func TestSessionSpecAfterConfigChange(t *testing.T) {
 	session.ApplyChange(&Change{Config: newCfg, Description: "add service"})
 
 	// Second message — spec should be fetched and included.
-	session.ProcessMessage(context.Background(), "show me the new API")
+	session.ProcessMessage(context.Background(), "show me the new API") //nolint:errcheck
 	if !strings.Contains(provider.systemPrompt, "New API") {
 		t.Error("expected spec content in system prompt after config change")
 	}
@@ -440,7 +482,7 @@ func TestSessionSpecPrunedAfterServiceRemoval(t *testing.T) {
 	session := NewSession(t.TempDir(), cfg, provider)
 
 	// First message — spec fetched and included.
-	session.ProcessMessage(context.Background(), "hello")
+	session.ProcessMessage(context.Background(), "hello") //nolint:errcheck
 	if !strings.Contains(provider.systemPrompt, "Removable API") {
 		t.Fatal("expected spec in system prompt")
 	}
@@ -449,7 +491,7 @@ func TestSessionSpecPrunedAfterServiceRemoval(t *testing.T) {
 	session.ApplyChange(&Change{Config: &config.Config{}, Description: "remove service"})
 
 	// Next message — stale spec should be pruned.
-	session.ProcessMessage(context.Background(), "what now")
+	session.ProcessMessage(context.Background(), "what now") //nolint:errcheck
 	if strings.Contains(provider.systemPrompt, "Removable API") {
 		t.Error("stale spec should be pruned after service removal")
 	}

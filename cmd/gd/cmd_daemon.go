@@ -12,6 +12,7 @@ import (
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
 	"github.com/jcadam/burrow/pkg/pipeline"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/scheduler"
 	"github.com/spf13/cobra"
 )
@@ -118,10 +119,16 @@ func runRoutine(ctx context.Context, burrowDir string, routine *pipeline.Routine
 		fmt.Fprintf(os.Stderr, "warning: could not initialize context ledger: %v\n", err)
 	}
 
+	// Load user profile (optional, re-read each run for fresh data)
+	prof, _ := profile.Load(burrowDir)
+
 	reportsDir := filepath.Join(burrowDir, "reports")
 	executor := pipeline.NewExecutor(registry, synth, reportsDir)
 	if ledger != nil {
 		executor.SetLedger(ledger)
+	}
+	if prof != nil {
+		executor.SetProfile(prof)
 	}
 
 	report, err := executor.Run(ctx, routine)

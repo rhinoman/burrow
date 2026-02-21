@@ -11,6 +11,7 @@ import (
 
 	"github.com/jcadam/burrow/pkg/charts"
 	bcontext "github.com/jcadam/burrow/pkg/context"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
 	"github.com/jcadam/burrow/pkg/slug"
@@ -23,6 +24,7 @@ type Executor struct {
 	synthesizer synthesis.Synthesizer
 	reportsDir  string
 	ledger      *bcontext.Ledger
+	profile     *profile.Profile
 	randFunc    func(max int) int
 }
 
@@ -39,6 +41,11 @@ func NewExecutor(registry *services.Registry, synthesizer synthesis.Synthesizer,
 // SetLedger sets the context ledger for indexing results and reports.
 func (e *Executor) SetLedger(l *bcontext.Ledger) {
 	e.ledger = l
+}
+
+// SetProfile sets the user profile for template expansion in routines.
+func (e *Executor) SetProfile(p *profile.Profile) {
+	e.profile = p
 }
 
 // SetRandFunc replaces the random function (for testing jitter).
@@ -100,7 +107,17 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 				return
 			}
 
-			result, err := svc.Execute(ctx, src.Tool, src.Params)
+			// Expand {{profile.X}} references in params at execution time.
+			params := src.Params
+			if e.profile != nil && len(params) > 0 {
+				expanded, expandErr := profile.ExpandParams(params, e.profile)
+				if expandErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: profile expansion in %s/%s params: %v\n", src.Service, src.Tool, expandErr)
+				}
+				params = expanded
+			}
+
+			result, err := svc.Execute(ctx, src.Tool, params)
 			if err != nil {
 				results[idx] = &services.Result{
 					Service:   src.Service,
@@ -134,8 +151,27 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 		return nil, fmt.Errorf("saving raw results: %w", err)
 	}
 
-	// Inject comparison context if compare_with is set (spec §5.3).
+	// Expand {{profile.X}} references in synthesis system prompt and report title.
 	synthesisSystem := routine.Synthesis.System
+	if e.profile != nil {
+		if expanded, err := profile.Expand(synthesisSystem, e.profile); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: profile expansion in synthesis system: %v\n", err)
+			synthesisSystem = expanded // partial expansion is still useful
+		} else {
+			synthesisSystem = expanded
+		}
+	}
+	reportTitle := routine.Report.Title
+	if e.profile != nil {
+		if expanded, err := profile.Expand(reportTitle, e.profile); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: profile expansion in report title: %v\n", err)
+			reportTitle = expanded
+		} else {
+			reportTitle = expanded
+		}
+	}
+
+	// Inject comparison context if compare_with is set (spec §5.3).
 	if routine.Report.CompareWith != "" {
 		prevReport, findErr := reports.FindLatest(e.reportsDir, routine.Report.CompareWith)
 		if findErr != nil {
@@ -147,7 +183,7 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 	}
 
 	// Synthesize
-	markdown, err := e.synthesizer.Synthesize(ctx, routine.Report.Title, synthesisSystem, results)
+	markdown, err := e.synthesizer.Synthesize(ctx, reportTitle, synthesisSystem, results)
 	if err != nil {
 		return nil, fmt.Errorf("synthesis failed: %w", err)
 	}
@@ -223,8 +259,18 @@ func (e *Executor) TestSources(ctx context.Context, routine *Routine) []SourceSt
 			continue
 		}
 
+		// Expand {{profile.X}} references in params.
+		params := src.Params
+		if e.profile != nil && len(params) > 0 {
+			expanded, expandErr := profile.ExpandParams(params, e.profile)
+			if expandErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: profile expansion in %s/%s params: %v\n", src.Service, src.Tool, expandErr)
+			}
+			params = expanded
+		}
+
 		start := time.Now()
-		result, err := svc.Execute(ctx, src.Tool, src.Params)
+		result, err := svc.Execute(ctx, src.Tool, params)
 		status.Latency = time.Since(start)
 
 		if err != nil {

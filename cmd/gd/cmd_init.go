@@ -9,6 +9,7 @@ import (
 
 	"github.com/jcadam/burrow/pkg/config"
 	"github.com/jcadam/burrow/pkg/configure"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/spf13/cobra"
 )
 
@@ -35,6 +36,7 @@ var initCmd = &cobra.Command{
 		}
 
 		var cfg *config.Config
+		var prof *profile.Profile
 
 		// Try to detect Ollama for conversational config
 		if provider := configure.DetectOllama(); provider != nil {
@@ -55,6 +57,10 @@ var initCmd = &cobra.Command{
 		// Fallback to structured wizard
 		if cfg == nil {
 			wiz := configure.NewWizard(os.Stdin, os.Stdout)
+
+			// Profile step first (before services)
+			prof = wiz.ConfigureProfile()
+
 			cfg, err = wiz.RunInit()
 			if err != nil {
 				return fmt.Errorf("configuration wizard: %w", err)
@@ -69,6 +75,13 @@ var initCmd = &cobra.Command{
 		// Save config
 		if err := config.Save(burrowDir, cfg); err != nil {
 			return fmt.Errorf("saving configuration: %w", err)
+		}
+
+		// Save profile if created
+		if prof != nil {
+			if err := profile.Save(burrowDir, prof); err != nil {
+				return fmt.Errorf("saving profile: %w", err)
+			}
 		}
 
 		// Create standard directories
@@ -108,13 +121,25 @@ func runConversationalInit(ctx context.Context, session *configure.Session) (*co
 			continue
 		}
 
-		response, change, err := session.ProcessMessage(ctx, input)
+		response, change, profChange, err := session.ProcessMessage(ctx, input)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 			continue
 		}
 
 		fmt.Println("\n  " + response + "\n")
+
+		if profChange != nil {
+			fmt.Println("  Apply profile change? (y/n)")
+			fmt.Print("  > ")
+			if scanner.Scan() && scanner.Text() == "y" {
+				if err := session.ApplyProfileChange(profChange); err != nil {
+					fmt.Fprintf(os.Stderr, "  Error applying profile: %v\n", err)
+				} else {
+					fmt.Println("  Profile saved.")
+				}
+			}
+		}
 
 		if change != nil {
 			fmt.Println("  Apply this configuration? (y/n)")

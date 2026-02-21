@@ -147,8 +147,9 @@ The client MUST support the following service types:
 |------|-------------|
 | `mcp` | MCP-compatible endpoint with tool discovery and invocation |
 | `rest` | Generic REST API with user-defined tool mappings |
+| `rss` | RSS/Atom feed with automatic parsing |
 
-The client SHOULD support additional service types as needed (RSS feeds, GraphQL, etc.) through a pluggable adapter interface.
+The client SHOULD support additional service types as needed (GraphQL, etc.) through a pluggable adapter interface.
 
 ### 3.4 Tool Mapping for REST Services
 
@@ -621,6 +622,7 @@ All configuration is stored as YAML files under `~/.burrow/`. The conversational
 ```
 ~/.burrow/
   config.yaml              # main configuration (services, privacy, apps, LLM)
+  profile.yaml             # user profile — identity, interests, domain context (optional)
   routines/                # routine definitions
   contacts/                # imported contact data
   reports/                 # generated reports
@@ -644,6 +646,64 @@ Override with any application name. The client uses the configured application f
 ### 9.4 Configuration Validation
 
 The client MUST validate configuration on startup and report errors clearly. Invalid configuration MUST NOT cause silent failures.
+
+### 9.5 User Profile
+
+The user profile is an optional `~/.burrow/profile.yaml` file that declares identity, interests, competitors, and other domain-specific context. The profile is referenced in routines, synthesis prompts, ask/interactive context, and draft generation via `{{profile.field_name}}` template syntax.
+
+```yaml
+# ~/.burrow/profile.yaml
+name: "Trivyn"
+description: |
+  Small geospatial intelligence firm. Government
+  contracting, mostly IC and DoD. Solo founder.
+interests:
+  - knowledge graphs
+  - geospatial analytics
+  - synthetic aperture radar
+
+# Ad-hoc fields — add whatever is relevant to your domain
+competitors:
+  - Maxar
+  - BlackSky
+naics_codes:
+  - "541370"
+  - "541512"
+```
+
+Three fields are well-known (`name`, `description`, `interests`). All other fields are freeform — users add whatever makes sense for their domain (`competitors`, `naics_codes`, `focus_agencies`, etc.).
+
+**Template expansion.** Any field in the profile can be referenced in routine YAML via `{{profile.field_name}}`:
+
+```yaml
+synthesis:
+  system: |
+    Write a daily brief for {{profile.name}}.
+    {{profile.description}}
+    Prioritize: {{profile.interests}}
+    Flag activity from: {{profile.competitors}}
+sources:
+  - service: sam-gov
+    tool: search_opportunities
+    params:
+      naics: "{{profile.naics_codes}}"
+```
+
+- List values are expanded as comma-separated strings
+- Expansion happens at execution time (not when routines are loaded)
+- Unresolved references are left as-is and logged as warnings; the routine still runs
+- Nil profile (no profile.yaml) leaves all `{{profile.X}}` references unchanged
+
+**Privacy note.** Profile fields included in synthesis system prompts are sent to the configured LLM provider. When using a remote LLM, be aware that profile data (name, description, interests) will leave your machine during synthesis. This is the user's choice — the system prompt is user-authored.
+
+**Management.**
+
+```
+gd profile              Display current profile
+gd profile edit         Open profile.yaml in configured editor
+```
+
+Profile creation is part of `gd init` (wizard step) and `gd configure` (conversational). Users can also create or edit the file directly.
 
 ## 10. Rendering
 
@@ -712,6 +772,9 @@ gd reports view [date]         View a report
 gd reports search <query>      Search across reports
 gd reports compare <d1> <d2>   Compare two reports
 gd reports export <date> <fmt> Export report
+
+gd profile                     Display user profile
+gd profile edit                Edit profile.yaml in configured editor
 
 gd ask "..."                   Query local context with LLM
 gd context search <query>      Full-text search context

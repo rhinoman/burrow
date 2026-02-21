@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jcadam/burrow/pkg/actions"
 	bcontext "github.com/jcadam/burrow/pkg/context"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/synthesis"
 )
 
@@ -79,6 +80,7 @@ type Viewer struct {
 	handoff  *actions.Handoff
 	provider synthesis.Provider
 	ledger   *bcontext.Ledger
+	profile  *profile.Profile
 	ctx      context.Context
 
 	// Chart rendering
@@ -107,6 +109,11 @@ func WithProvider(p synthesis.Provider) ViewerOption {
 // WithLedger provides a context ledger for gathering draft context.
 func WithLedger(l *bcontext.Ledger) ViewerOption {
 	return func(v *Viewer) { v.ledger = l }
+}
+
+// WithProfile provides a user profile for draft generation.
+func WithProfile(p *profile.Profile) ViewerOption {
+	return func(v *Viewer) { v.profile = p }
 }
 
 // WithContext provides a cancellable context for async operations.
@@ -694,6 +701,7 @@ func (v Viewer) startDraftFromAction(a actions.Action) (tea.Model, tea.Cmd) {
 	// Async LLM draft generation
 	provider := v.provider
 	ledger := v.ledger
+	prof := v.profile
 	ctx := v.viewerContext()
 	v.busy = true
 	v.setStatus("Generating draft...")
@@ -703,7 +711,7 @@ func (v Viewer) startDraftFromAction(a actions.Action) (tea.Model, tea.Cmd) {
 		if ledger != nil {
 			contextData, _ = ledger.GatherContext(50_000)
 		}
-		draft, err := actions.GenerateDraft(ctx, provider, instruction, contextData)
+		draft, err := actions.GenerateDraft(ctx, provider, instruction, contextData, prof)
 		if err != nil {
 			return draftResultMsg{err: err}
 		}

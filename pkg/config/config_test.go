@@ -804,6 +804,32 @@ func TestValidateProxyDirectShorthand(t *testing.T) {
 	}
 }
 
+func TestValidateRSSType(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{Name: "hn", Type: "rss", Endpoint: "https://hnrss.org/newest"},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("rss type should be valid: %v", err)
+	}
+}
+
+func TestValidateRSSNegativeMaxItems(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{Name: "hn", Type: "rss", Endpoint: "https://hnrss.org/newest", MaxItems: -1},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for negative max_items")
+	}
+	if !strings.Contains(err.Error(), "negative max_items") {
+		t.Errorf("expected 'negative max_items' in error, got: %v", err)
+	}
+}
+
 func TestValidateProxyRouteDuplicateService(t *testing.T) {
 	cfg := &Config{
 		Services: []ServiceConfig{

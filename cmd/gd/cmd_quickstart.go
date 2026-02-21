@@ -12,6 +12,7 @@ import (
 	"github.com/jcadam/burrow/pkg/config"
 	"github.com/jcadam/burrow/pkg/configure"
 	"github.com/jcadam/burrow/pkg/pipeline"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/synthesis"
 	"github.com/spf13/cobra"
 )
@@ -330,8 +331,14 @@ func runQuickstart(ctx context.Context) error {
 		return fmt.Errorf("configuring synthesizer: %w", err)
 	}
 
+	// Load user profile (optional)
+	prof, _ := profile.Load(burrowDir)
+
 	reportsDir := filepath.Join(burrowDir, "reports")
 	executor := pipeline.NewExecutor(registry, synth, reportsDir)
+	if prof != nil {
+		executor.SetProfile(prof)
+	}
 
 	fmt.Println()
 	fmt.Println("  Testing weather.gov connectivity...")

@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
 	"github.com/jcadam/burrow/pkg/contacts"
 	bcontext "github.com/jcadam/burrow/pkg/context"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/render"
 	"github.com/jcadam/burrow/pkg/synthesis"
 	"github.com/spf13/cobra"
@@ -18,10 +20,60 @@ func init() {
 	rootCmd.AddCommand(askCmd)
 }
 
-const askSystemPrompt = `You are a research analyst answering questions from collected intelligence data.
+const askSystemPromptBase = `You are a research analyst answering questions from collected intelligence data.
 Cite specific dates, numbers, and sources from the context when available.
 If the context doesn't contain relevant information, say so clearly.
 Be concise and actionable. Format your response as markdown.`
+
+// buildAskSystemPrompt returns the ask system prompt, enriched with profile
+// context when a profile is available. This is local-only (spec §6).
+func buildAskSystemPrompt(p *profile.Profile) string {
+	if p == nil {
+		return askSystemPromptBase
+	}
+
+	var b strings.Builder
+	b.WriteString(askSystemPromptBase)
+
+	if p.Name != "" {
+		b.WriteString("\n\nYou are answering questions for ")
+		b.WriteString(p.Name)
+		b.WriteString(".")
+	}
+	if p.Description != "" {
+		b.WriteString("\n")
+		b.WriteString(strings.TrimSpace(p.Description))
+	}
+	if len(p.Interests) > 0 {
+		b.WriteString("\nKey interests: ")
+		b.WriteString(strings.Join(p.Interests, ", "))
+		b.WriteString(".")
+	}
+
+	// Include any additional user-defined fields from the raw map,
+	// sorted for deterministic prompt output.
+	if p.Raw != nil {
+		keys := make([]string, 0, len(p.Raw))
+		for key := range p.Raw {
+			switch key {
+			case "name", "description", "interests":
+				continue
+			}
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			b.WriteString("\n")
+			b.WriteString(strings.ReplaceAll(key, "_", " "))
+			b.WriteString(": ")
+			if s, ok := p.Get(key); ok {
+				b.WriteString(s)
+			}
+		}
+	}
+
+	return b.String()
+}
 
 var askCmd = &cobra.Command{
 	Use:   "ask <query>",
@@ -55,10 +107,13 @@ var askCmd = &cobra.Command{
 		contactsDir := filepath.Join(burrowDir, "contacts")
 		contactStore, _ := contacts.NewStore(contactsDir)
 
+		// Load user profile (optional)
+		prof, _ := profile.Load(burrowDir)
+
 		// Find local LLM provider (spec: zero network requests for gd ask)
 		provider := findLocalProvider(cfg)
 		if provider != nil {
-			return askWithLLM(cmd, provider, ledger, contactStore, query)
+			return askWithLLM(cmd, provider, ledger, contactStore, prof, query)
 		}
 
 		// Fallback to text search
@@ -89,7 +144,7 @@ func findLocalProvider(cfg *config.Config) synthesis.Provider {
 }
 
 // askWithLLM gathers context and queries a local LLM for a reasoned answer.
-func askWithLLM(cmd *cobra.Command, provider synthesis.Provider, ledger *bcontext.Ledger, contactStore *contacts.Store, query string) error {
+func askWithLLM(cmd *cobra.Command, provider synthesis.Provider, ledger *bcontext.Ledger, contactStore *contacts.Store, prof *profile.Profile, query string) error {
 	contextData, err := ledger.GatherContext(100_000)
 	if err != nil {
 		return fmt.Errorf("gathering context: %w", err)
@@ -115,7 +170,7 @@ func askWithLLM(cmd *cobra.Command, provider synthesis.Provider, ledger *bcontex
 
 	fmt.Fprintf(os.Stderr, "Reasoning over %d bytes of context...\n", len(contextData))
 
-	response, err := provider.Complete(cmd.Context(), askSystemPrompt, userPrompt.String())
+	response, err := provider.Complete(cmd.Context(), buildAskSystemPrompt(prof), userPrompt.String())
 	if err != nil {
 		return fmt.Errorf("LLM error: %w", err)
 	}

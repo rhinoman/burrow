@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/profile"
 )
 
 // Wizard provides a structured (non-LLM) configuration interface.
@@ -49,6 +50,43 @@ func (w *Wizard) RunInit() (*config.Config, error) {
 	w.configureApps(cfg)
 
 	return cfg, nil
+}
+
+// ConfigureProfile asks the user for essential profile fields.
+// All fields are optional — user can press Enter to skip each.
+// Returns nil if user skipped everything.
+func (w *Wizard) ConfigureProfile() *profile.Profile {
+	w.print("  User Profile (optional)\n")
+	w.print("  ───────────────────────\n")
+	w.print("  Your profile flows into routines, reports, and search context.\n")
+	w.print("  Press Enter to skip any field.\n\n")
+
+	name := strings.TrimSpace(w.prompt("  Name or organization: "))
+	desc := strings.TrimSpace(w.prompt("  Describe what you do (1-2 sentences): "))
+	interestsRaw := strings.TrimSpace(w.prompt("  Topics you track (comma-separated): "))
+
+	// If user skipped everything, return nil
+	if name == "" && desc == "" && interestsRaw == "" {
+		w.print("  Profile skipped. Create one later with: gd profile edit\n\n")
+		return nil
+	}
+
+	p := &profile.Profile{
+		Name:        name,
+		Description: desc,
+	}
+
+	if interestsRaw != "" {
+		for _, item := range strings.Split(interestsRaw, ",") {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				p.Interests = append(p.Interests, item)
+			}
+		}
+	}
+
+	w.print("\n")
+	return p
 }
 
 // RunModify presents the current config and applies user-requested changes.

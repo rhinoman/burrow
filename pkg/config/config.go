@@ -25,12 +25,13 @@ type Config struct {
 // ServiceConfig defines an external service endpoint.
 type ServiceConfig struct {
 	Name     string       `yaml:"name"`
-	Type     string       `yaml:"type"` // rest | mcp
+	Type     string       `yaml:"type"` // rest | mcp | rss
 	Endpoint string       `yaml:"endpoint"`
 	Auth     AuthConfig   `yaml:"auth"`
 	Spec     string       `yaml:"spec,omitempty"` // OpenAPI/Swagger spec URL for auto-discovery of tool mappings
 	Tools    []ToolConfig `yaml:"tools,omitempty"`
 	CacheTTL int          `yaml:"cache_ttl,omitempty"`
+	MaxItems int          `yaml:"max_items,omitempty"` // RSS: max items to return (0 or omitted = default 20)
 }
 
 // AuthConfig defines how to authenticate with a service.
@@ -225,7 +226,7 @@ func Validate(cfg *Config) error {
 		names[svc.Name] = true
 
 		switch svc.Type {
-		case "rest", "mcp":
+		case "rest", "mcp", "rss":
 			// valid
 		case "":
 			return fmt.Errorf("service %q missing type", svc.Name)
@@ -254,6 +255,13 @@ func Validate(cfg *Config) error {
 			// valid — no credentials needed
 		default:
 			return fmt.Errorf("service %q has unknown auth method %q", svc.Name, svc.Auth.Method)
+		}
+	}
+
+	// Validate max_items for RSS services.
+	for _, svc := range cfg.Services {
+		if svc.MaxItems < 0 {
+			return fmt.Errorf("service %q has negative max_items %d", svc.Name, svc.MaxItems)
 		}
 	}
 

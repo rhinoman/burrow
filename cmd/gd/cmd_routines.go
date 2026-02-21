@@ -13,7 +13,9 @@ import (
 	"github.com/jcadam/burrow/pkg/mcp"
 	"github.com/jcadam/burrow/pkg/pipeline"
 	"github.com/jcadam/burrow/pkg/privacy"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/reports"
+	brss "github.com/jcadam/burrow/pkg/rss"
 	"github.com/jcadam/burrow/pkg/services"
 	"github.com/jcadam/burrow/pkg/synthesis"
 	"github.com/spf13/cobra"
@@ -119,11 +121,17 @@ var routinesRunCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "warning: could not initialize context ledger: %v\n", err)
 		}
 
+		// Load user profile (optional)
+		prof, _ := profile.Load(burrowDir)
+
 		// Run pipeline
 		reportsDir := filepath.Join(burrowDir, "reports")
 		executor := pipeline.NewExecutor(registry, synth, reportsDir)
 		if ledger != nil {
 			executor.SetLedger(ledger)
+		}
+		if prof != nil {
+			executor.SetProfile(prof)
 		}
 
 		report, err := executor.Run(cmd.Context(), routine)
@@ -221,9 +229,15 @@ var routinesTestCmd = &cobra.Command{
 
 		fmt.Printf("Testing %d source(s) for routine %q...\n\n", len(routine.Sources), routineName)
 
+		// Load user profile (optional)
+		prof, _ := profile.Load(burrowDir)
+
 		synth := synthesis.NewPassthroughSynthesizer()
 		reportsDir := filepath.Join(burrowDir, "reports")
 		executor := pipeline.NewExecutor(registry, synth, reportsDir)
+		if prof != nil {
+			executor.SetProfile(prof)
+		}
 
 		statuses := executor.TestSources(cmd.Context(), routine)
 
@@ -284,6 +298,8 @@ func buildRegistry(cfg *config.Config, burrowDir string) (*services.Registry, er
 		case "mcp":
 			httpClient := mcp.NewHTTPClient(svcCfg.Auth, privCfg, proxyURL)
 			svc = mcp.NewMCPService(svcCfg.Name, svcCfg.Endpoint, httpClient)
+		case "rss":
+			svc = brss.NewRSSService(svcCfg, privCfg, proxyURL)
 		default:
 			fmt.Fprintf(os.Stderr, "warning: unknown service type %q for %q, skipping\n", svcCfg.Type, svcCfg.Name)
 			continue

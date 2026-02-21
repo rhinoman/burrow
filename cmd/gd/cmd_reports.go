@@ -8,6 +8,7 @@ import (
 
 	"github.com/jcadam/burrow/pkg/actions"
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/render"
 	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/spf13/cobra"
@@ -86,7 +87,8 @@ var reportsViewCmd = &cobra.Command{
 		}
 
 		cfg, _ := loadConfigQuiet(burrowDir)
-		opts := viewerOptions(cfg)
+		prof, _ := profile.Load(burrowDir)
+		opts := viewerOptions(cfg, prof)
 		opts = append(opts, render.WithReportDir(report.Dir))
 		if cfg != nil {
 			opts = append(opts, render.WithImageConfig(cfg.Rendering.Images))
@@ -358,7 +360,7 @@ Format your response as structured markdown with clear sections.`
 }
 
 // viewerOptions builds viewer options from config for the enhanced viewer.
-func viewerOptions(cfg *config.Config) []render.ViewerOption {
+func viewerOptions(cfg *config.Config, prof *profile.Profile) []render.ViewerOption {
 	if cfg == nil {
 		return nil
 	}
@@ -368,6 +370,10 @@ func viewerOptions(cfg *config.Config) []render.ViewerOption {
 
 	if p := findLocalProvider(cfg); p != nil {
 		opts = append(opts, render.WithProvider(p))
+	}
+
+	if prof != nil {
+		opts = append(opts, render.WithProfile(prof))
 	}
 
 	return opts
