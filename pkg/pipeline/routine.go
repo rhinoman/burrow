@@ -61,7 +61,7 @@ func LoadRoutine(path string) (*Routine, error) {
 	base := filepath.Base(path)
 	r.Name = strings.TrimSuffix(base, filepath.Ext(base))
 
-	if err := validateRoutine(&r); err != nil {
+	if err := ValidateRoutine(&r); err != nil {
 		return nil, fmt.Errorf("validating routine %q: %w", r.Name, err)
 	}
 
@@ -119,7 +119,8 @@ func SaveRoutine(routinesDir string, r *Routine) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-func validateRoutine(r *Routine) error {
+// ValidateRoutine checks that a routine has the required fields.
+func ValidateRoutine(r *Routine) error {
 	if r.Report.Title == "" {
 		return fmt.Errorf("missing report.title")
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/pipeline"
 	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/synthesis"
 	"gopkg.in/yaml.v3"
@@ -34,11 +35,20 @@ type ProfileChange struct {
 	Raw         string // The YAML block from LLM output
 }
 
+// RoutineChange represents a proposed routine creation or update.
+type RoutineChange struct {
+	Description string
+	Routine     *pipeline.Routine
+	Raw         string // The YAML block from LLM output
+	IsNew       bool   // True if this is a new routine, false if updating existing
+}
+
 // Session provides LLM-driven conversational configuration.
 type Session struct {
 	burrowDir  string
 	cfg        *config.Config
 	profileCfg *profile.Profile
+	routines   []*pipeline.Routine
 	provider   synthesis.Provider
 	history    []Message
 	specCache  map[string]*FetchedSpec // keyed by service name
@@ -49,10 +59,14 @@ func NewSession(burrowDir string, cfg *config.Config, provider synthesis.Provide
 	// Load existing profile (best-effort).
 	prof, _ := profile.Load(burrowDir)
 
+	// Load existing routines (best-effort).
+	routines, _ := pipeline.LoadAllRoutines(filepath.Join(burrowDir, "routines"))
+
 	return &Session{
 		burrowDir:  burrowDir,
 		cfg:        cfg,
 		profileCfg: prof,
+		routines:   routines,
 		provider:   provider,
 		specCache:  make(map[string]*FetchedSpec),
 	}
@@ -65,11 +79,19 @@ Current configuration (YAML):
 
 %s
 
+%s
+
 Rules:
 - When the user wants to change config, output the COMPLETE updated config in a YAML code block (` + "```yaml" + ` ... ` + "```" + `)
 - When the user describes themselves, their interests, competitors, or industry, propose profile.yaml changes in a ` + "```yaml profile" + ` block (distinct from the config ` + "```yaml" + ` block)
+- When the user wants to create or update a routine, use a ` + "```yaml routine <name>" + ` block (e.g. ` + "```yaml routine morning-intel" + `)
 - profile.yaml stores: name, description, interests (list), and any user-defined fields (competitors, naics_codes, focus_agencies, etc.)
 - Profile fields are referenced in routines via {{profile.field_name}} template syntax
+- Routines are separate YAML files in ~/.burrow/routines/<name>.yaml — they are NOT part of config.yaml
+- Routine YAML must include report.title and at least one source with service and tool fields
+- Do NOT include a name field in routine YAML — the name comes from the block tag / filename
+- Sources reference services from config.yaml by name
+- Available routine fields: schedule (cron), timezone, jitter (seconds), llm (provider name), report (title, style, generate_charts, max_length, compare_with), synthesis.system (system prompt for LLM), sources (list of service, tool, params, context_label)
 - Use ${ENV_VAR} syntax for credentials — never store raw secrets
 - Valid service types: rest, mcp, rss
 - RSS services use type: rss with the feed URL as endpoint. No tools config needed — they auto-provide a 'feed' tool. Optional: max_items (default 20)
@@ -104,8 +126,8 @@ Present available endpoints and let the user choose which ones to map as tools.
 Each tool needs: name, description, method, path, and params (with name, type, maps_to).`
 
 // ProcessMessage sends a user message and returns the assistant's response
-// along with any proposed config change and/or profile change.
-func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *Change, *ProfileChange, error) {
+// along with any proposed config change, profile change, and/or routine change.
+func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *Change, *ProfileChange, *RoutineChange, error) {
 	s.history = append(s.history, Message{Role: "user", Content: userMsg})
 
 	// Build the full conversation as a user prompt
@@ -120,7 +142,7 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 	systemPrompt := s.buildSystemPrompt()
 	response, err := s.provider.Complete(ctx, systemPrompt, conversationBuilder.String())
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("LLM error: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("LLM error: %w", err)
 	}
 
 	s.history = append(s.history, Message{Role: "assistant", Content: response})
@@ -143,6 +165,31 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 		}
 	}
 
+	// Check for routine YAML block (```yaml routine <name> ... ```)
+	var routineChange *RoutineChange
+	if routineBlock, routineName := extractRoutineYAMLBlock(response); routineBlock != "" {
+		var r pipeline.Routine
+		if err := yaml.Unmarshal([]byte(routineBlock), &r); err == nil {
+			r.Name = routineName
+
+			// Determine if this is a new routine or an update.
+			isNew := true
+			for _, existing := range s.routines {
+				if existing.Name == routineName {
+					isNew = false
+					break
+				}
+			}
+
+			routineChange = &RoutineChange{
+				Description: extractDescription(response, routineBlock),
+				Routine:     &r,
+				Raw:         routineBlock,
+				IsNew:       isNew,
+			}
+		}
+	}
+
 	// Check for config YAML block (```yaml ... ```)
 	var change *Change
 	if yamlBlock := extractYAMLBlock(response); yamlBlock != "" {
@@ -158,7 +205,7 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 		}
 	}
 
-	return response, change, profChange, nil
+	return response, change, profChange, routineChange, nil
 }
 
 // ApplyProfileChange saves a proposed profile change.
@@ -167,6 +214,33 @@ func (s *Session) ApplyProfileChange(change *ProfileChange) error {
 		return fmt.Errorf("saving profile: %w", err)
 	}
 	s.profileCfg = change.Profile
+	return nil
+}
+
+// ApplyRoutineChange validates and saves a proposed routine change.
+func (s *Session) ApplyRoutineChange(change *RoutineChange) error {
+	if err := pipeline.ValidateRoutine(change.Routine); err != nil {
+		return fmt.Errorf("invalid routine: %w", err)
+	}
+
+	routinesDir := filepath.Join(s.burrowDir, "routines")
+	if err := pipeline.SaveRoutine(routinesDir, change.Routine); err != nil {
+		return fmt.Errorf("saving routine: %w", err)
+	}
+
+	// Update the in-memory routines list.
+	found := false
+	for i, r := range s.routines {
+		if r.Name == change.Routine.Name {
+			s.routines[i] = change.Routine
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.routines = append(s.routines, change.Routine)
+	}
+
 	return nil
 }
 
@@ -226,7 +300,23 @@ func (s *Session) buildSystemPrompt() string {
 		profileContext = "No profile configured yet. The user can create one by describing themselves."
 	}
 
-	prompt := fmt.Sprintf(configSystemPrompt, string(cfgYAML), profileContext)
+	var routineContext string
+	if len(s.routines) > 0 {
+		var sb strings.Builder
+		sb.WriteString("Current routines:\n")
+		for _, r := range s.routines {
+			sb.WriteString(fmt.Sprintf("\n--- %s.yaml ---\n", r.Name))
+			rYAML, err := yaml.Marshal(r)
+			if err == nil {
+				sb.Write(rYAML)
+			}
+		}
+		routineContext = sb.String()
+	} else {
+		routineContext = "No routines configured yet."
+	}
+
+	prompt := fmt.Sprintf(configSystemPrompt, string(cfgYAML), profileContext, routineContext)
 
 	// Append spec context for successfully fetched specs.
 	for svcName, spec := range s.specCache {
@@ -407,6 +497,38 @@ func extractProfileYAMLBlock(text string) string {
 		}
 	}
 	return ""
+}
+
+// extractRoutineYAMLBlock finds the first ```yaml routine <name> ... ``` block in text.
+// Returns the block content and the routine name. Requires a non-empty name after "routine".
+func extractRoutineYAMLBlock(text string) (string, string) {
+	lines := strings.Split(text, "\n")
+	inBlock := false
+	var content strings.Builder
+	var name string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock {
+			for _, prefix := range []string{"```yaml routine ", "```yml routine "} {
+				if strings.HasPrefix(trimmed, prefix) {
+					n := strings.TrimSpace(trimmed[len(prefix):])
+					if n != "" {
+						inBlock = true
+						name = n
+						break
+					}
+				}
+			}
+		} else {
+			if trimmed == "```" {
+				return strings.TrimSpace(content.String()), name
+			}
+			content.WriteString(line)
+			content.WriteByte('\n')
+		}
+	}
+	return "", ""
 }
 
 // extractDescription gets the text before the YAML block as a change description.

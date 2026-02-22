@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jcadam/burrow/pkg/config"
+	"github.com/jcadam/burrow/pkg/pipeline"
 )
 
 // fakeProvider is a mock LLM provider for testing.
@@ -118,7 +119,7 @@ func TestSessionProcessMessageNoYAML(t *testing.T) {
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	response, change, _, err := session.ProcessMessage(context.Background(), "Help me configure Burrow")
+	response, change, _, _, err := session.ProcessMessage(context.Background(), "Help me configure Burrow")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -149,7 +150,7 @@ This configures a local Ollama provider.`
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	response, change, _, err := session.ProcessMessage(context.Background(), "Add Ollama as my LLM provider")
+	response, change, _, _, err := session.ProcessMessage(context.Background(), "Add Ollama as my LLM provider")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -431,7 +432,7 @@ func TestSessionFetchesSpecOnFirstMessage(t *testing.T) {
 	}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	_, _, _, err := session.ProcessMessage(context.Background(), "Show me the petstore endpoints")
+	_, _, _, _, err := session.ProcessMessage(context.Background(), "Show me the petstore endpoints")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -497,7 +498,7 @@ func TestSessionSpecFetchErrorDoesNotBlock(t *testing.T) {
 	}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	resp, _, _, err := session.ProcessMessage(context.Background(), "help")
+	resp, _, _, _, err := session.ProcessMessage(context.Background(), "help")
 	if err != nil {
 		t.Fatalf("ProcessMessage should succeed despite spec error: %v", err)
 	}
@@ -698,7 +699,7 @@ Done!`
 	provider := &fakeProvider{response: partialYAML}
 	session := NewSession(dir, cfg, provider)
 
-	_, change, _, err := session.ProcessMessage(context.Background(), "Add a new service")
+	_, change, _, _, err := session.ProcessMessage(context.Background(), "Add a new service")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -785,5 +786,232 @@ func TestApplyChangeCreatesBackup(t *testing.T) {
 	// Backup should contain the original config's LLM provider.
 	if !strings.Contains(string(data), "local/llama") {
 		t.Error("backup does not contain original config data")
+	}
+}
+
+func TestExtractRoutineYAMLBlock(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantContent string
+		wantName    string
+	}{
+		{
+			name:        "valid routine block",
+			input:       "Here's your routine:\n```yaml routine morning-intel\nreport:\n  title: Morning Intel\nsources:\n  - service: news\n    tool: search\n```\nDone!",
+			wantContent: "report:\n  title: Morning Intel\nsources:\n  - service: news\n    tool: search",
+			wantName:    "morning-intel",
+		},
+		{
+			name:        "yml variant",
+			input:       "```yml routine daily\nreport:\n  title: Daily\n```",
+			wantContent: "report:\n  title: Daily",
+			wantName:    "daily",
+		},
+		{
+			name:        "bare yaml not matched",
+			input:       "```yaml\nservices:\n  - name: test\n```",
+			wantContent: "",
+			wantName:    "",
+		},
+		{
+			name:        "profile yaml not matched",
+			input:       "```yaml profile\nname: Test\n```",
+			wantContent: "",
+			wantName:    "",
+		},
+		{
+			name:        "missing name returns nothing",
+			input:       "```yaml routine \nreport:\n  title: Test\n```",
+			wantContent: "",
+			wantName:    "",
+		},
+		{
+			name:        "unclosed block",
+			input:       "```yaml routine test\nreport:\n  title: Test",
+			wantContent: "",
+			wantName:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotContent, gotName := extractRoutineYAMLBlock(tt.input)
+			if gotContent != tt.wantContent {
+				t.Errorf("content = %q, want %q", gotContent, tt.wantContent)
+			}
+			if gotName != tt.wantName {
+				t.Errorf("name = %q, want %q", gotName, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestExtractYAMLBlockDoesNotMatchRoutine(t *testing.T) {
+	input := "```yaml routine morning-intel\nreport:\n  title: Test\n```"
+	got := extractYAMLBlock(input)
+	if got != "" {
+		t.Errorf("extractYAMLBlock matched routine block: %q", got)
+	}
+}
+
+func TestSessionProcessMessageWithRoutine(t *testing.T) {
+	routineResponse := `I'll create a morning intelligence routine for you.
+
+` + "```yaml routine morning-intel" + `
+schedule: "0 7 * * *"
+report:
+  title: Morning Intelligence Brief
+sources:
+  - service: news-api
+    tool: search
+    params:
+      query: technology
+` + "```" + `
+
+This routine will run every morning at 7 AM.`
+
+	provider := &fakeProvider{response: routineResponse}
+	cfg := &config.Config{}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	response, _, _, routineChange, err := session.ProcessMessage(context.Background(), "Create a morning intel routine")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if response == "" {
+		t.Error("expected non-empty response")
+	}
+	if routineChange == nil {
+		t.Fatal("expected a routine change")
+	}
+	if routineChange.Routine == nil {
+		t.Fatal("expected routine in change")
+	}
+	if routineChange.Routine.Name != "morning-intel" {
+		t.Errorf("expected name morning-intel, got %q", routineChange.Routine.Name)
+	}
+	if routineChange.Routine.Report.Title != "Morning Intelligence Brief" {
+		t.Errorf("expected title 'Morning Intelligence Brief', got %q", routineChange.Routine.Report.Title)
+	}
+	if !routineChange.IsNew {
+		t.Error("expected IsNew to be true")
+	}
+}
+
+func TestApplyRoutineChange(t *testing.T) {
+	dir := t.TempDir()
+	session := NewSession(dir, &config.Config{}, nil)
+
+	routine := &pipeline.Routine{
+		Name:     "test-routine",
+		Schedule: "0 8 * * *",
+		Report:   pipeline.ReportConfig{Title: "Test Report"},
+		Sources: []pipeline.SourceConfig{
+			{Service: "svc1", Tool: "search"},
+		},
+	}
+
+	change := &RoutineChange{
+		Routine: routine,
+		IsNew:   true,
+	}
+
+	if err := session.ApplyRoutineChange(change); err != nil {
+		t.Fatalf("ApplyRoutineChange: %v", err)
+	}
+
+	// Verify saved to disk and loadable.
+	loaded, err := pipeline.LoadAllRoutines(filepath.Join(dir, "routines"))
+	if err != nil {
+		t.Fatalf("LoadAllRoutines: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 routine, got %d", len(loaded))
+	}
+	if loaded[0].Name != "test-routine" {
+		t.Errorf("expected name test-routine, got %q", loaded[0].Name)
+	}
+	if loaded[0].Report.Title != "Test Report" {
+		t.Errorf("expected title 'Test Report', got %q", loaded[0].Report.Title)
+	}
+}
+
+func TestApplyRoutineChangeValidation(t *testing.T) {
+	dir := t.TempDir()
+	session := NewSession(dir, &config.Config{}, nil)
+
+	// Missing title and sources — should fail validation.
+	routine := &pipeline.Routine{
+		Name: "bad-routine",
+	}
+
+	change := &RoutineChange{Routine: routine, IsNew: true}
+	err := session.ApplyRoutineChange(change)
+	if err == nil {
+		t.Fatal("expected validation error for invalid routine")
+	}
+	if !strings.Contains(err.Error(), "invalid routine") {
+		t.Errorf("expected 'invalid routine' error, got: %v", err)
+	}
+}
+
+func TestSessionRoutineContextInPrompt(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a routine on disk so NewSession loads it.
+	routinesDir := filepath.Join(dir, "routines")
+	os.MkdirAll(routinesDir, 0o755)
+	routine := &pipeline.Routine{
+		Name:   "existing-routine",
+		Report: pipeline.ReportConfig{Title: "Existing Report"},
+		Sources: []pipeline.SourceConfig{
+			{Service: "svc1", Tool: "search"},
+		},
+	}
+	pipeline.SaveRoutine(routinesDir, routine)
+
+	provider := &capturingProvider{response: "I see your routine."}
+	cfg := &config.Config{}
+	session := NewSession(dir, cfg, provider)
+
+	session.ProcessMessage(context.Background(), "show me my routines") //nolint:errcheck
+
+	if !strings.Contains(provider.systemPrompt, "existing-routine") {
+		t.Error("expected routine name in system prompt")
+	}
+	if !strings.Contains(provider.systemPrompt, "Existing Report") {
+		t.Error("expected routine title in system prompt")
+	}
+}
+
+func TestSessionProcessMessageRoutineIsNotNew(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create an existing routine on disk.
+	routinesDir := filepath.Join(dir, "routines")
+	os.MkdirAll(routinesDir, 0o755)
+	routine := &pipeline.Routine{
+		Name:   "morning-intel",
+		Report: pipeline.ReportConfig{Title: "Old Title"},
+		Sources: []pipeline.SourceConfig{
+			{Service: "svc1", Tool: "search"},
+		},
+	}
+	pipeline.SaveRoutine(routinesDir, routine)
+
+	routineResponse := "Updating:\n```yaml routine morning-intel\nreport:\n  title: New Title\nsources:\n  - service: svc1\n    tool: search\n```"
+	provider := &fakeProvider{response: routineResponse}
+	session := NewSession(dir, &config.Config{}, provider)
+
+	_, _, _, routineChange, err := session.ProcessMessage(context.Background(), "update morning-intel")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if routineChange == nil {
+		t.Fatal("expected routine change")
+	}
+	if routineChange.IsNew {
+		t.Error("expected IsNew to be false for existing routine")
 	}
 }

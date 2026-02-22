@@ -95,7 +95,7 @@ func runConversationalConfigure(ctx context.Context, session *configure.Session)
 			continue
 		}
 
-		response, change, profChange, err := session.ProcessMessage(ctx, input)
+		response, change, profChange, routineChange, err := session.ProcessMessage(ctx, input)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 			continue
@@ -114,6 +114,24 @@ func runConversationalConfigure(ctx context.Context, session *configure.Session)
 				}
 			} else {
 				fmt.Println("  Profile change discarded.")
+			}
+		}
+
+		if routineChange != nil {
+			action := "Create"
+			if !routineChange.IsNew {
+				action = "Update"
+			}
+			fmt.Printf("  %s routine %q? (y/n)\n", action, routineChange.Routine.Name)
+			fmt.Print("  > ")
+			if scanner.Scan() && scanner.Text() == "y" {
+				if err := session.ApplyRoutineChange(routineChange); err != nil {
+					fmt.Fprintf(os.Stderr, "  Error applying routine: %v\n", err)
+				} else {
+					fmt.Printf("  Routine %q saved.\n", routineChange.Routine.Name)
+				}
+			} else {
+				fmt.Println("  Routine change discarded.")
 			}
 		}
 
