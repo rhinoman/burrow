@@ -14,6 +14,7 @@ import (
 // MCPService wraps an MCP client as a services.Service.
 type MCPService struct {
 	name     string
+	endpoint string
 	client   *Client
 	tools    map[string]ToolInfo
 	initOnce sync.Once
@@ -24,8 +25,9 @@ type MCPService struct {
 // with NewHTTPClient to ensure per-service transport isolation and auth injection.
 func NewMCPService(name string, endpoint string, httpClient *http.Client) *MCPService {
 	return &MCPService{
-		name:   name,
-		client: NewClient(endpoint, httpClient),
+		name:     name,
+		endpoint: endpoint,
+		client:   NewClient(endpoint, httpClient),
 	}
 }
 
@@ -60,6 +62,7 @@ func (m *MCPService) Execute(ctx context.Context, tool string, params map[string
 		return &services.Result{
 			Service:   m.name,
 			Tool:      tool,
+			URL:       m.endpoint,
 			Timestamp: time.Now().UTC(),
 			Error:     err.Error(),
 		}, nil
@@ -70,6 +73,7 @@ func (m *MCPService) Execute(ctx context.Context, tool string, params map[string
 		return &services.Result{
 			Service:   m.name,
 			Tool:      tool,
+			URL:       m.endpoint,
 			Timestamp: time.Now().UTC(),
 			Error:     errMsg,
 		}, nil
@@ -80,6 +84,7 @@ func (m *MCPService) Execute(ctx context.Context, tool string, params map[string
 		Service:   m.name,
 		Tool:      tool,
 		Data:      []byte(data),
+		URL:       m.endpoint,
 		Timestamp: time.Now().UTC(),
 	}, nil
 }

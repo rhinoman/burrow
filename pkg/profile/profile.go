@@ -99,15 +99,32 @@ func Save(burrowDir string, p *Profile) error {
 
 // Get returns a string value for the given key from the Raw map.
 // List values are joined with ", ". Returns ("", false) for missing keys.
+// Supports dot-notation for nested maps (e.g., "coordinates.latitude").
 func (p *Profile) Get(key string) (string, bool) {
 	if p == nil || p.Raw == nil {
 		return "", false
 	}
-	val, ok := p.Raw[key]
-	if !ok {
-		return "", false
+	if !strings.Contains(key, ".") {
+		val, ok := p.Raw[key]
+		if !ok {
+			return "", false
+		}
+		return formatValue(val), true
 	}
-	return formatValue(val), true
+	// Dot-notation: walk nested maps.
+	parts := strings.Split(key, ".")
+	var current interface{} = p.Raw
+	for _, part := range parts {
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		current, ok = m[part]
+		if !ok {
+			return "", false
+		}
+	}
+	return formatValue(current), true
 }
 
 // GetList returns a string slice for the given key. Returns (nil, false)

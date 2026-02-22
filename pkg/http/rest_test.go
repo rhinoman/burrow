@@ -556,6 +556,48 @@ func TestPrivacyTransportApplied(t *testing.T) {
 	}
 }
 
+func TestExecuteWithExpandFunc(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		// Verify the template ref was expanded in the path
+		if got := r.URL.Query().Get("latitude"); got != "61.22" {
+			t.Errorf("expected latitude=61.22, got %q", got)
+		}
+		if got := r.URL.Query().Get("longitude"); got != "-149.90" {
+			t.Errorf("expected longitude=-149.90, got %q", got)
+		}
+		w.Write([]byte(`{"ok": true}`))
+	})
+	defer srv.Close()
+
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "expand-test",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "forecast",
+				Method: "GET",
+				Path:   "/v1/forecast?latitude=LATITUDE&longitude=LONGITUDE",
+			},
+		},
+	}, nil, "")
+
+	// Set an expand func that simulates profile template expansion
+	svc.SetExpandFunc(func(s string) (string, error) {
+		s = strings.ReplaceAll(s, "LATITUDE", "61.22")
+		s = strings.ReplaceAll(s, "LONGITUDE", "-149.90")
+		return s, nil
+	})
+
+	result, err := svc.Execute(context.Background(), "forecast", nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
 func TestProxyURLSetOnTransport(t *testing.T) {
 	svc := NewRESTService(config.ServiceConfig{
 		Name:     "proxy-test",

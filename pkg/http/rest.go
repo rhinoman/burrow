@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -17,11 +18,18 @@ import (
 
 // RESTService implements services.Service for REST API endpoints.
 type RESTService struct {
-	name     string
-	endpoint string
-	auth     config.AuthConfig
-	tools    map[string]config.ToolConfig
-	client   *http.Client
+	name       string
+	endpoint   string
+	auth       config.AuthConfig
+	tools      map[string]config.ToolConfig
+	client     *http.Client
+	expandFunc func(string) (string, error) // optional template expansion
+}
+
+// SetExpandFunc sets a function for expanding template references in tool paths
+// and other string fields before URL construction.
+func (r *RESTService) SetExpandFunc(fn func(string) (string, error)) {
+	r.expandFunc = fn
 }
 
 // NewRESTService creates a REST service from config. Each service gets its own
@@ -66,7 +74,18 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 		return nil, fmt.Errorf("service %q has no tool %q", r.name, tool)
 	}
 
-	reqURL, err := r.buildURL(tc, params)
+	// Expand template references in the tool path before URL construction.
+	path := tc.Path
+	if r.expandFunc != nil {
+		expanded, err := r.expandFunc(path)
+		if err != nil {
+			// Log warning, use partially-expanded path.
+			fmt.Fprintf(os.Stderr, "warning: expanding path template: %v\n", err)
+		}
+		path = expanded
+	}
+
+	reqURL, err := r.buildURL(path, tc, params)
 	if err != nil {
 		return nil, fmt.Errorf("building URL: %w", err)
 	}
@@ -94,6 +113,7 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 		return &services.Result{
 			Service:   r.name,
 			Tool:      tool,
+			URL:       reqURL,
 			Timestamp: time.Now().UTC(),
 			Error:     err.Error(),
 		}, nil
@@ -106,6 +126,7 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 		return &services.Result{
 			Service:   r.name,
 			Tool:      tool,
+			URL:       reqURL,
 			Timestamp: time.Now().UTC(),
 			Error:     fmt.Sprintf("reading response: %v", err),
 		}, nil
@@ -124,6 +145,7 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 			Service:   r.name,
 			Tool:      tool,
 			Data:      body,
+			URL:       reqURL,
 			Timestamp: time.Now().UTC(),
 			Error:     errMsg,
 		}, nil
@@ -133,11 +155,12 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 		Service:   r.name,
 		Tool:      tool,
 		Data:      body,
+		URL:       reqURL,
 		Timestamp: time.Now().UTC(),
 	}, nil
 }
 
-func (r *RESTService) buildURL(tc config.ToolConfig, params map[string]string) (string, error) {
+func (r *RESTService) buildURL(path string, tc config.ToolConfig, params map[string]string) (string, error) {
 	base, err := url.Parse(r.endpoint)
 	if err != nil {
 		return "", err
@@ -145,7 +168,7 @@ func (r *RESTService) buildURL(tc config.ToolConfig, params map[string]string) (
 
 	// Tool paths are absolute from the host root (e.g., /v2/search), not relative
 	// to the endpoint path. ResolveReference handles this correctly.
-	ref, err := url.Parse(tc.Path)
+	ref, err := url.Parse(path)
 	if err != nil {
 		return "", err
 	}

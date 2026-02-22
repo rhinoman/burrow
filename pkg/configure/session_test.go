@@ -119,7 +119,7 @@ func TestSessionProcessMessageNoYAML(t *testing.T) {
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	response, change, _, _, err := session.ProcessMessage(context.Background(), "Help me configure Burrow")
+	response, change, _, _, _, err := session.ProcessMessage(context.Background(), "Help me configure Burrow")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -150,7 +150,7 @@ This configures a local Ollama provider.`
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	response, change, _, _, err := session.ProcessMessage(context.Background(), "Add Ollama as my LLM provider")
+	response, change, _, _, _, err := session.ProcessMessage(context.Background(), "Add Ollama as my LLM provider")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestSessionFetchesSpecOnFirstMessage(t *testing.T) {
 	}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	_, _, _, _, err := session.ProcessMessage(context.Background(), "Show me the petstore endpoints")
+	_, _, _, _, _, err := session.ProcessMessage(context.Background(), "Show me the petstore endpoints")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestSessionSpecFetchErrorDoesNotBlock(t *testing.T) {
 	}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	resp, _, _, _, err := session.ProcessMessage(context.Background(), "help")
+	resp, _, _, _, _, err := session.ProcessMessage(context.Background(), "help")
 	if err != nil {
 		t.Fatalf("ProcessMessage should succeed despite spec error: %v", err)
 	}
@@ -699,7 +699,7 @@ Done!`
 	provider := &fakeProvider{response: partialYAML}
 	session := NewSession(dir, cfg, provider)
 
-	_, change, _, _, err := session.ProcessMessage(context.Background(), "Add a new service")
+	_, change, _, _, _, err := session.ProcessMessage(context.Background(), "Add a new service")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -875,7 +875,7 @@ This routine will run every morning at 7 AM.`
 	cfg := &config.Config{}
 	session := NewSession(t.TempDir(), cfg, provider)
 
-	response, _, _, routineChange, err := session.ProcessMessage(context.Background(), "Create a morning intel routine")
+	response, _, _, routineChange, _, err := session.ProcessMessage(context.Background(), "Create a morning intel routine")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -1004,7 +1004,7 @@ func TestSessionProcessMessageRoutineIsNotNew(t *testing.T) {
 	provider := &fakeProvider{response: routineResponse}
 	session := NewSession(dir, &config.Config{}, provider)
 
-	_, _, _, routineChange, err := session.ProcessMessage(context.Background(), "update morning-intel")
+	_, _, _, routineChange, _, err := session.ProcessMessage(context.Background(), "update morning-intel")
 	if err != nil {
 		t.Fatalf("ProcessMessage: %v", err)
 	}
@@ -1013,5 +1013,162 @@ func TestSessionProcessMessageRoutineIsNotNew(t *testing.T) {
 	}
 	if routineChange.IsNew {
 		t.Error("expected IsNew to be false for existing routine")
+	}
+}
+
+func TestProcessMessageWarnsOnBadRoutineYAML(t *testing.T) {
+	// The LLM produces a routine block with invalid YAML — ProcessMessage
+	// should return the response plus a warning, not silently drop the routine.
+	badResponse := "Here's the routine:\n```yaml routine broken\n: invalid: yaml: [[\n```\n"
+	provider := &fakeProvider{response: badResponse}
+	session := NewSession(t.TempDir(), &config.Config{}, provider)
+
+	_, _, _, routineChange, warnings, err := session.ProcessMessage(context.Background(), "create a routine")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if routineChange != nil {
+		t.Error("expected nil routineChange for invalid YAML")
+	}
+	if len(warnings) == 0 {
+		t.Fatal("expected at least one warning for bad YAML")
+	}
+	if !strings.Contains(warnings[0], "Failed to parse routine YAML") {
+		t.Errorf("unexpected warning: %s", warnings[0])
+	}
+}
+
+func TestProcessMessageWarnsOnBadProfileYAML(t *testing.T) {
+	badResponse := "Profile:\n```yaml profile\n: invalid: yaml: [[\n```\n"
+	provider := &fakeProvider{response: badResponse}
+	session := NewSession(t.TempDir(), &config.Config{}, provider)
+
+	_, _, profChange, _, warnings, err := session.ProcessMessage(context.Background(), "set my profile")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if profChange != nil {
+		t.Error("expected nil profChange for invalid YAML")
+	}
+	if len(warnings) == 0 {
+		t.Fatal("expected at least one warning for bad profile YAML")
+	}
+	if !strings.Contains(warnings[0], "Failed to parse profile YAML") {
+		t.Errorf("unexpected warning: %s", warnings[0])
+	}
+}
+
+func TestProcessMessageWarnsOnBadConfigYAML(t *testing.T) {
+	badResponse := "Config:\n```yaml\n: invalid: yaml: [[\n```\n"
+	provider := &fakeProvider{response: badResponse}
+	session := NewSession(t.TempDir(), &config.Config{}, provider)
+
+	_, change, _, _, warnings, err := session.ProcessMessage(context.Background(), "update config")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if change != nil {
+		t.Error("expected nil change for invalid YAML")
+	}
+	if len(warnings) == 0 {
+		t.Fatal("expected at least one warning for bad config YAML")
+	}
+	if !strings.Contains(warnings[0], "Failed to parse config YAML") {
+		t.Errorf("unexpected warning: %s", warnings[0])
+	}
+}
+
+func TestExtractYAMLBlockCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "uppercase YAML",
+			input: "```YAML\nkey: value\n```",
+			want:  "key: value",
+		},
+		{
+			name:  "mixed case Yaml",
+			input: "```Yaml\nkey: value\n```",
+			want:  "key: value",
+		},
+		{
+			name:  "uppercase YML",
+			input: "```YML\nkey: value\n```",
+			want:  "key: value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractYAMLBlock(tt.input)
+			if got != tt.want {
+				t.Errorf("extractYAMLBlock() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractProfileYAMLBlockCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "uppercase YAML Profile",
+			input: "```YAML Profile\nname: Test\n```",
+			want:  "name: Test",
+		},
+		{
+			name:  "mixed case",
+			input: "```Yaml profile\nname: Test\n```",
+			want:  "name: Test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractProfileYAMLBlock(tt.input)
+			if got != tt.want {
+				t.Errorf("extractProfileYAMLBlock() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractRoutineYAMLBlockCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantContent string
+		wantName    string
+	}{
+		{
+			name:        "uppercase YAML",
+			input:       "```YAML routine morning-intel\nreport:\n  title: Test\n```",
+			wantContent: "report:\n  title: Test",
+			wantName:    "morning-intel",
+		},
+		{
+			name:        "mixed case Yaml Routine",
+			input:       "```Yaml Routine daily\nreport:\n  title: Daily\n```",
+			wantContent: "report:\n  title: Daily",
+			wantName:    "daily",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotContent, gotName := extractRoutineYAMLBlock(tt.input)
+			if gotContent != tt.wantContent {
+				t.Errorf("content = %q, want %q", gotContent, tt.wantContent)
+			}
+			if gotName != tt.wantName {
+				t.Errorf("name = %q, want %q", gotName, tt.wantName)
+			}
+		})
 	}
 }

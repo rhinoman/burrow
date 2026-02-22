@@ -103,7 +103,11 @@ func runRoutine(ctx context.Context, burrowDir string, routine *pipeline.Routine
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	registry, err := buildRegistry(cfg, burrowDir)
+	// Load user profile (optional, re-read each run for fresh data) —
+	// needed before buildRegistry for template expansion in tool paths.
+	prof, _ := profile.Load(burrowDir)
+
+	registry, err := buildRegistry(cfg, burrowDir, prof)
 	if err != nil {
 		return err
 	}
@@ -118,9 +122,6 @@ func runRoutine(ctx context.Context, burrowDir string, routine *pipeline.Routine
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not initialize context ledger: %v\n", err)
 	}
-
-	// Load user profile (optional, re-read each run for fresh data)
-	prof, _ := profile.Load(burrowDir)
 
 	reportsDir := filepath.Join(burrowDir, "reports")
 	executor := pipeline.NewExecutor(registry, synth, reportsDir)

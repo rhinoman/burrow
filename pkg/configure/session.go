@@ -85,8 +85,19 @@ Rules:
 - When the user wants to change config, output the COMPLETE updated config in a YAML code block (` + "```yaml" + ` ... ` + "```" + `)
 - When the user describes themselves, their interests, competitors, or industry, propose profile.yaml changes in a ` + "```yaml profile" + ` block (distinct from the config ` + "```yaml" + ` block)
 - When the user wants to create or update a routine, use a ` + "```yaml routine <name>" + ` block (e.g. ` + "```yaml routine morning-intel" + `)
+- All YAML values must be plain strings, string lists, or string maps — never use JSON-style inline arrays like ["a", "b"] or nested objects where a simple string is expected
 - profile.yaml stores: name, description, interests (list), and any user-defined fields (competitors, naics_codes, focus_agencies, etc.)
-- Profile fields are referenced in routines via {{profile.field_name}} template syntax
+- Templates use Go text/template syntax with these built-in functions:
+  - {{profile "field_name"}} — profile field lookup
+  - {{profile "parent.child"}} — nested profile field
+  - {{today}}, {{yesterday}} — date strings (YYYY-MM-DD)
+  - {{now}} — RFC3339 timestamp
+  - {{year}}, {{month}}, {{day}} — date components
+  - {{yesterday | date "01/02/2006"}} — reformat date (Go reference time layout)
+  - {{split}}, {{join}}, {{lower}}, {{upper}} — string helpers
+  - {{index (split (profile "coordinates") ",") 0}} — expressions
+- Legacy syntax {{profile.field_name}} is also supported (auto-converted)
+- Structure profile data so each value is directly referenceable
 - Routines are separate YAML files in ~/.burrow/routines/<name>.yaml — they are NOT part of config.yaml
 - Routine YAML must include report.title and at least one source with service and tool fields
 - Do NOT include a name field in routine YAML — the name comes from the block tag / filename
@@ -94,6 +105,15 @@ Rules:
 - When updating an existing routine, output the COMPLETE routine with ALL fields — omitted fields will be reset to defaults
 - Never remove routine fields the user didn't ask to change
 - Available routine fields: schedule (cron), timezone, jitter (seconds), llm (provider name), report (title, style, generate_charts, max_length, compare_with), synthesis.system (system prompt for LLM), sources (list of service, tool, params, context_label)
+- Source params must be key-value string pairs, e.g. params: {q: "search term", limit: "10"} — values are always plain strings, never arrays or nested objects
+- Example routine source:
+    sources:
+      - service: my-api
+        tool: search
+        params:
+          q: "{{profile \"interests\" | join \", \"}}"
+          limit: "10"
+        context_label: search results
 - Use ${ENV_VAR} syntax for credentials — never store raw secrets
 - Valid service types: rest, mcp, rss
 - RSS services use type: rss with the feed URL as endpoint. No tools config needed — they auto-provide a 'feed' tool. Optional: max_items (default 20)
@@ -128,8 +148,10 @@ Present available endpoints and let the user choose which ones to map as tools.
 Each tool needs: name, description, method, path, and params (with name, type, maps_to).`
 
 // ProcessMessage sends a user message and returns the assistant's response
-// along with any proposed config change, profile change, and/or routine change.
-func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *Change, *ProfileChange, *RoutineChange, error) {
+// along with any proposed config change, profile change, routine change,
+// parse warnings, and/or error. Warnings are non-fatal issues (e.g. YAML
+// parse failures) that should be surfaced to the user.
+func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *Change, *ProfileChange, *RoutineChange, []string, error) {
 	s.history = append(s.history, Message{Role: "user", Content: userMsg})
 
 	// Build the full conversation as a user prompt
@@ -144,16 +166,20 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 	systemPrompt := s.buildSystemPrompt()
 	response, err := s.provider.Complete(ctx, systemPrompt, conversationBuilder.String())
 	if err != nil {
-		return "", nil, nil, nil, fmt.Errorf("LLM error: %w", err)
+		return "", nil, nil, nil, nil, fmt.Errorf("LLM error: %w", err)
 	}
 
 	s.history = append(s.history, Message{Role: "assistant", Content: response})
+
+	var warnings []string
 
 	// Check for profile YAML block first (```yaml profile ... ```)
 	var profChange *ProfileChange
 	if profileBlock := extractProfileYAMLBlock(response); profileBlock != "" {
 		var p profile.Profile
-		if err := yaml.Unmarshal([]byte(profileBlock), &p); err == nil {
+		if err := yaml.Unmarshal([]byte(profileBlock), &p); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Failed to parse profile YAML: %v", err))
+		} else {
 			// Also unmarshal into raw map for ad-hoc fields
 			var raw map[string]interface{}
 			if err := yaml.Unmarshal([]byte(profileBlock), &raw); err == nil {
@@ -171,7 +197,9 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 	var routineChange *RoutineChange
 	if routineBlock, routineName := extractRoutineYAMLBlock(response); routineBlock != "" {
 		var r pipeline.Routine
-		if err := yaml.Unmarshal([]byte(routineBlock), &r); err == nil {
+		if err := yaml.Unmarshal([]byte(routineBlock), &r); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Failed to parse routine YAML: %v", err))
+		} else {
 			r.Name = routineName
 
 			// Determine if this is a new routine or an update.
@@ -198,7 +226,9 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 		// Unmarshal onto a copy of the current config so that fields the
 		// LLM omits retain their current values instead of being zeroed.
 		proposed := s.cfg.DeepCopy()
-		if err := yaml.Unmarshal([]byte(yamlBlock), proposed); err == nil {
+		if err := yaml.Unmarshal([]byte(yamlBlock), proposed); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Failed to parse config YAML: %v", err))
+		} else {
 			change = &Change{
 				Description: extractDescription(response, yamlBlock),
 				Config:      proposed,
@@ -207,7 +237,7 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 		}
 	}
 
-	return response, change, profChange, routineChange, nil
+	return response, change, profChange, routineChange, warnings, nil
 }
 
 // ApplyProfileChange saves a proposed profile change.
@@ -451,8 +481,7 @@ func redactConfig(cfg *config.Config) *config.Config {
 }
 
 // extractYAMLBlock finds the first ```yaml ... ``` block in text (not ```yaml profile).
-// Uses exact string equality on trimmed lines, so variant whitespace like
-// "```yaml  profile" would not match either extractor and be silently dropped.
+// Matching is case-insensitive so ```YAML, ```Yaml, etc. all work.
 func extractYAMLBlock(text string) string {
 	lines := strings.Split(text, "\n")
 	inBlock := false
@@ -461,8 +490,9 @@ func extractYAMLBlock(text string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !inBlock {
-			// Match ```yaml or ```yml but NOT ```yaml profile
-			if (trimmed == "```yaml" || trimmed == "```yml") {
+			// Match ```yaml or ```yml but NOT ```yaml profile / ```yaml routine
+			lower := strings.ToLower(trimmed)
+			if lower == "```yaml" || lower == "```yml" {
 				inBlock = true
 				continue
 			}
@@ -478,6 +508,7 @@ func extractYAMLBlock(text string) string {
 }
 
 // extractProfileYAMLBlock finds the first ```yaml profile ... ``` block in text.
+// Matching is case-insensitive so ```YAML profile, ```Yaml Profile, etc. all work.
 func extractProfileYAMLBlock(text string) string {
 	lines := strings.Split(text, "\n")
 	inBlock := false
@@ -486,7 +517,8 @@ func extractProfileYAMLBlock(text string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !inBlock {
-			if trimmed == "```yaml profile" || trimmed == "```yml profile" {
+			lower := strings.ToLower(trimmed)
+			if lower == "```yaml profile" || lower == "```yml profile" {
 				inBlock = true
 				continue
 			}
@@ -503,6 +535,7 @@ func extractProfileYAMLBlock(text string) string {
 
 // extractRoutineYAMLBlock finds the first ```yaml routine <name> ... ``` block in text.
 // Returns the block content and the routine name. Requires a non-empty name after "routine".
+// Matching is case-insensitive so ```YAML routine, ```Yaml Routine, etc. all work.
 func extractRoutineYAMLBlock(text string) (string, string) {
 	lines := strings.Split(text, "\n")
 	inBlock := false
@@ -512,8 +545,10 @@ func extractRoutineYAMLBlock(text string) (string, string) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !inBlock {
+			lower := strings.ToLower(trimmed)
 			for _, prefix := range []string{"```yaml routine ", "```yml routine "} {
-				if strings.HasPrefix(trimmed, prefix) {
+				if strings.HasPrefix(lower, prefix) {
+					// Use original trimmed string for the name to preserve case.
 					n := strings.TrimSpace(trimmed[len(prefix):])
 					if n != "" {
 						inBlock = true

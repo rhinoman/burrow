@@ -20,6 +20,7 @@ type Result struct {
 	Service   string
 	Tool      string
 	Data      []byte
+	URL       string // the request URL (for debugging)
 	Timestamp time.Time
 	Error     string
 }

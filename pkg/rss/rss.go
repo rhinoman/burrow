@@ -80,6 +80,7 @@ func (r *RSSService) Execute(ctx context.Context, tool string, params map[string
 		return &services.Result{
 			Service:   r.name,
 			Tool:      tool,
+			URL:       r.endpoint,
 			Timestamp: time.Now().UTC(),
 			Error:     err.Error(),
 		}, nil
@@ -95,6 +96,7 @@ func (r *RSSService) Execute(ctx context.Context, tool string, params map[string
 		return &services.Result{
 			Service:   r.name,
 			Tool:      tool,
+			URL:       r.endpoint,
 			Timestamp: time.Now().UTC(),
 			Error:     errMsg,
 		}, nil
@@ -106,6 +108,7 @@ func (r *RSSService) Execute(ctx context.Context, tool string, params map[string
 		return &services.Result{
 			Service:   r.name,
 			Tool:      tool,
+			URL:       r.endpoint,
 			Timestamp: time.Now().UTC(),
 			Error:     fmt.Sprintf("reading response: %v", err),
 		}, nil
@@ -116,6 +119,7 @@ func (r *RSSService) Execute(ctx context.Context, tool string, params map[string
 		return &services.Result{
 			Service:   r.name,
 			Tool:      tool,
+			URL:       r.endpoint,
 			Timestamp: time.Now().UTC(),
 			Error:     fmt.Sprintf("parsing feed: %v", err),
 		}, nil
@@ -130,6 +134,7 @@ func (r *RSSService) Execute(ctx context.Context, tool string, params map[string
 		Service:   r.name,
 		Tool:      tool,
 		Data:      data,
+		URL:       r.endpoint,
 		Timestamp: time.Now().UTC(),
 	}, nil
 }

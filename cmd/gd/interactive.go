@@ -108,8 +108,12 @@ func runInteractive(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "warning: config issue: %v\n", err)
 	}
 
+	// Load user profile (optional) — needed before buildRegistry for
+	// template expansion in tool paths.
+	prof, _ := profile.Load(burrowDir)
+
 	// Build registry
-	registry, err := buildRegistry(cfg, burrowDir)
+	registry, err := buildRegistry(cfg, burrowDir, prof)
 	if err != nil {
 		return fmt.Errorf("building service registry: %w", err)
 	}
@@ -129,9 +133,6 @@ func runInteractive(ctx context.Context) error {
 	// "gd ask": zero network requests for reasoning. Remote providers are
 	// intentionally excluded to maintain compartmentalization.
 	provider := findLocalProvider(cfg)
-
-	// Load user profile (optional)
-	prof, _ := profile.Load(burrowDir)
 
 	// Create handoff
 	handoff := actions.NewHandoff(cfg.Apps)

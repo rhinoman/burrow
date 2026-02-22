@@ -160,6 +160,59 @@ func TestSaveCreatesDirectory(t *testing.T) {
 	}
 }
 
+func TestGetNestedField(t *testing.T) {
+	p := &Profile{
+		Raw: map[string]interface{}{
+			"location": map[string]interface{}{
+				"latitude":  "61.22",
+				"longitude": "-149.90",
+				"details": map[string]interface{}{
+					"city": "Anchorage",
+				},
+			},
+		},
+	}
+
+	val, ok := p.Get("location.latitude")
+	if !ok || val != "61.22" {
+		t.Errorf("Get(location.latitude) = (%q, %v)", val, ok)
+	}
+
+	// Three levels deep
+	val, ok = p.Get("location.details.city")
+	if !ok || val != "Anchorage" {
+		t.Errorf("Get(location.details.city) = (%q, %v)", val, ok)
+	}
+}
+
+func TestGetNestedMissing(t *testing.T) {
+	p := &Profile{
+		Raw: map[string]interface{}{
+			"location": map[string]interface{}{
+				"latitude": "61.22",
+			},
+		},
+	}
+
+	// Missing leaf
+	_, ok := p.Get("location.nonexistent")
+	if ok {
+		t.Error("Get(location.nonexistent) should return false")
+	}
+
+	// Missing intermediate
+	_, ok = p.Get("missing.latitude")
+	if ok {
+		t.Error("Get(missing.latitude) should return false")
+	}
+
+	// Non-map intermediate
+	_, ok = p.Get("location.latitude.sub")
+	if ok {
+		t.Error("Get(location.latitude.sub) should return false for non-map intermediate")
+	}
+}
+
 func TestSaveFromTypedFieldsOnly(t *testing.T) {
 	dir := t.TempDir()
 

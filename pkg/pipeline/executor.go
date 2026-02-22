@@ -236,6 +236,7 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 type SourceStatus struct {
 	Service string
 	Tool    string
+	URL     string
 	OK      bool
 	Error   string
 	Latency time.Duration
@@ -275,10 +276,13 @@ func (e *Executor) TestSources(ctx context.Context, routine *Routine) []SourceSt
 
 		if err != nil {
 			status.Error = err.Error()
-		} else if result.Error != "" {
-			status.Error = result.Error
-		} else {
-			status.OK = true
+		} else if result != nil {
+			status.URL = result.URL
+			if result.Error != "" {
+				status.Error = result.Error
+			} else {
+				status.OK = true
+			}
 		}
 
 		statuses[i] = status

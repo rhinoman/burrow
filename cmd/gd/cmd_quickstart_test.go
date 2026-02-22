@@ -335,7 +335,7 @@ func TestQuickstartEndToEnd(t *testing.T) {
 	}
 
 	// Build registry with all services
-	registry, err := buildRegistry(cfg, burrowDir)
+	registry, err := buildRegistry(cfg, burrowDir, nil)
 	if err != nil {
 		t.Fatalf("buildRegistry: %v", err)
 	}

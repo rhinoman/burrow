@@ -102,8 +102,12 @@ var routinesRunCmd = &cobra.Command{
 			return fmt.Errorf("loading routine: %w", err)
 		}
 
+		// Load user profile (optional) — needed before buildRegistry for
+		// template expansion in tool paths.
+		prof, _ := profile.Load(burrowDir)
+
 		// Build service registry
-		registry, err := buildRegistry(cfg, burrowDir)
+		registry, err := buildRegistry(cfg, burrowDir, prof)
 		if err != nil {
 			return err
 		}
@@ -120,9 +124,6 @@ var routinesRunCmd = &cobra.Command{
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not initialize context ledger: %v\n", err)
 		}
-
-		// Load user profile (optional)
-		prof, _ := profile.Load(burrowDir)
 
 		// Run pipeline
 		reportsDir := filepath.Join(burrowDir, "reports")
@@ -222,15 +223,16 @@ var routinesTestCmd = &cobra.Command{
 			return fmt.Errorf("loading routine: %w", err)
 		}
 
-		registry, err := buildRegistry(cfg, burrowDir)
+		// Load user profile (optional) — needed before buildRegistry for
+		// template expansion in tool paths.
+		prof, _ := profile.Load(burrowDir)
+
+		registry, err := buildRegistry(cfg, burrowDir, prof)
 		if err != nil {
 			return err
 		}
 
 		fmt.Printf("Testing %d source(s) for routine %q...\n\n", len(routine.Sources), routineName)
-
-		// Load user profile (optional)
-		prof, _ := profile.Load(burrowDir)
 
 		synth := synthesis.NewPassthroughSynthesizer()
 		reportsDir := filepath.Join(burrowDir, "reports")
@@ -255,6 +257,9 @@ var routinesTestCmd = &cobra.Command{
 				fmt.Printf("  — %s", s.Error)
 			}
 			fmt.Println()
+			if s.URL != "" {
+				fmt.Printf("        %s\n", s.URL)
+			}
 		}
 
 		fmt.Println()
@@ -269,7 +274,9 @@ var routinesTestCmd = &cobra.Command{
 
 // buildRegistry creates a service registry from config, wiring privacy transport,
 // MCP clients, and result caching. burrowDir is used for cache storage.
-func buildRegistry(cfg *config.Config, burrowDir string) (*services.Registry, error) {
+// prof is optional — when non-nil, REST services get a template expand function
+// for resolving {{profile.X}} references in tool paths.
+func buildRegistry(cfg *config.Config, burrowDir string, prof *profile.Profile) (*services.Registry, error) {
 	var privCfg *privacy.Config
 	if cfg.Privacy.StripReferrers || cfg.Privacy.RandomizeUserAgent || cfg.Privacy.MinimizeRequests {
 		privCfg = &privacy.Config{
@@ -294,7 +301,14 @@ func buildRegistry(cfg *config.Config, burrowDir string) (*services.Registry, er
 
 		switch svcCfg.Type {
 		case "rest":
-			svc = bhttp.NewRESTService(svcCfg, privCfg, proxyURL)
+			restSvc := bhttp.NewRESTService(svcCfg, privCfg, proxyURL)
+			if prof != nil {
+				p := prof // capture for closure
+				restSvc.SetExpandFunc(func(s string) (string, error) {
+					return profile.Expand(s, p)
+				})
+			}
+			svc = restSvc
 		case "mcp":
 			httpClient := mcp.NewHTTPClient(svcCfg.Auth, privCfg, proxyURL)
 			svc = mcp.NewMCPService(svcCfg.Name, svcCfg.Endpoint, httpClient)

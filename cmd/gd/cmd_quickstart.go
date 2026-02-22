@@ -427,7 +427,7 @@ func runQuickstart(ctx context.Context) error {
 	config.ResolveEnvVars(runtimeCfg)
 
 	// Build registry and test connectivity
-	registry, err := buildRegistry(runtimeCfg, burrowDir)
+	registry, err := buildRegistry(runtimeCfg, burrowDir, prof)
 	if err != nil {
 		return fmt.Errorf("building registry: %w", err)
 	}
@@ -453,6 +453,9 @@ func runQuickstart(ctx context.Context) error {
 		} else {
 			fmt.Printf("    FAIL  %s/%s  — %s\n", s.Service, s.Tool, s.Error)
 			allOK = false
+		}
+		if s.URL != "" {
+			fmt.Printf("          %s\n", s.URL)
 		}
 	}
 
