@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,12 +38,8 @@ var initCmd = &cobra.Command{
 
 		// Try to detect Ollama for conversational config
 		if provider := configure.DetectOllama(); provider != nil {
-			fmt.Println("  Ollama detected — starting conversational configuration.")
-			fmt.Println("  Type your configuration requests, or 'done' to finish.")
-			fmt.Println()
-
 			session := configure.NewSession(burrowDir, &config.Config{}, provider)
-			cfg, err = runConversationalInit(cmd.Context(), session)
+			cfg, err = configure.RunInitTUI(cmd.Context(), session)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  Conversational config failed: %v\n", err)
 				fmt.Println("  Falling back to structured wizard.")
@@ -100,89 +94,4 @@ var initCmd = &cobra.Command{
 
 		return nil
 	},
-}
-
-// runConversationalInit runs an LLM-driven init session, returning the final config.
-// Returns (nil, nil) if no config was applied, so the caller can fall through to the wizard.
-func runConversationalInit(ctx context.Context, session *configure.Session) (*config.Config, error) {
-	reader := bufio.NewReader(os.Stdin)
-	var appliedConfig *config.Config
-
-	for {
-		fmt.Print("  > ")
-		input, err := readMultiLine(reader)
-		if err != nil {
-			break
-		}
-		if input == "done" || input == "quit" || input == "exit" {
-			break
-		}
-		if input == "" {
-			continue
-		}
-
-		response, change, profChange, routineChange, err := session.ProcessMessage(ctx, input)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-			continue
-		}
-
-		fmt.Println("\n  " + response + "\n")
-
-		if profChange != nil {
-			fmt.Println("  Apply profile change? (y/n)")
-			fmt.Print("  > ")
-			if readConfirm(reader) == "y" {
-				if err := session.ApplyProfileChange(profChange); err != nil {
-					fmt.Fprintf(os.Stderr, "  Error applying profile: %v\n", err)
-				} else {
-					fmt.Println("  Profile saved.")
-				}
-			}
-		}
-
-		if routineChange != nil {
-			action := "Create"
-			if !routineChange.IsNew {
-				action = "Update"
-			}
-			fmt.Printf("  %s routine %q? (y/n)\n", action, routineChange.Routine.Name)
-			fmt.Print("  > ")
-			if readConfirm(reader) == "y" {
-				if err := session.ApplyRoutineChange(routineChange); err != nil {
-					fmt.Fprintf(os.Stderr, "  Error applying routine: %v\n", err)
-				} else {
-					fmt.Printf("  Routine %q saved.\n", routineChange.Routine.Name)
-				}
-			} else {
-				fmt.Println("  Routine change discarded.")
-			}
-		}
-
-		if change != nil {
-			fmt.Println("  Apply this configuration? (y/n)")
-			fmt.Print("  > ")
-			if readConfirm(reader) == "y" {
-				if err := session.ApplyChange(change); err != nil {
-					fmt.Fprintf(os.Stderr, "  Error applying: %v\n", err)
-				} else {
-					if change.RemoteLLMWarning {
-						fmt.Println()
-						fmt.Println("  ⚠ This configuration includes a remote LLM provider.")
-						fmt.Println("    Collected results will leave your machine during synthesis.")
-						fmt.Println("    For maximum privacy, use a local LLM provider.")
-						fmt.Println()
-					}
-					fmt.Println("  Configuration updated.")
-					appliedConfig = change.Config
-				}
-			}
-		}
-	}
-
-	// Only return a config that was actually applied and accepted.
-	if appliedConfig != nil {
-		return appliedConfig, nil
-	}
-	return nil, nil
 }

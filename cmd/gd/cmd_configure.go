@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bufio"
-	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
 	"github.com/jcadam/burrow/pkg/configure"
@@ -52,13 +48,9 @@ var configureCmd = &cobra.Command{
 		}
 
 		if provider != nil {
-			fmt.Println("  LLM available — starting conversational configuration.")
-			fmt.Println("  Describe what you want to change, or 'done' to finish.")
-			fmt.Println()
-
 			// Session uses the unresolved config so YAML output preserves ${ENV_VAR} references.
 			session := configure.NewSession(burrowDir, cfg, provider)
-			return runConversationalConfigure(cmd.Context(), session)
+			return configure.RunTUI(cmd.Context(), session)
 		}
 
 		// Fallback to wizard — operates on unresolved config to preserve ${ENV_VAR} references.
@@ -78,121 +70,4 @@ var configureCmd = &cobra.Command{
 		fmt.Printf("\n  Configuration saved to %s\n", configPath)
 		return nil
 	},
-}
-
-// readMultiLine reads user input, accumulating multiple lines when they
-// arrive together (e.g. pasted text). Single-line typed input is returned
-// immediately. Returns io.EOF when stdin is closed.
-func readMultiLine(reader *bufio.Reader) (string, error) {
-	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	if err == io.EOF && line == "" {
-		return "", io.EOF
-	}
-
-	var lines []string
-	if trimmed := strings.TrimRight(line, "\n\r"); trimmed != "" {
-		lines = append(lines, trimmed)
-	}
-
-	// Accumulate additional buffered lines (paste detection).
-	for reader.Buffered() > 0 {
-		extra, err := reader.ReadString('\n')
-		if trimmed := strings.TrimRight(extra, "\n\r"); trimmed != "" {
-			lines = append(lines, trimmed)
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	return strings.Join(lines, "\n"), nil
-}
-
-// readConfirm reads a single line for y/n confirmation.
-func readConfirm(reader *bufio.Reader) string {
-	line, _ := reader.ReadString('\n')
-	return strings.TrimSpace(line)
-}
-
-// runConversationalConfigure runs an LLM-driven config modification loop.
-func runConversationalConfigure(ctx context.Context, session *configure.Session) error {
-	reader := bufio.NewReader(os.Stdin)
-
-	for {
-		fmt.Print("  > ")
-		input, err := readMultiLine(reader)
-		if err != nil {
-			return nil
-		}
-		if input == "done" || input == "quit" || input == "exit" {
-			return nil
-		}
-		if input == "" {
-			continue
-		}
-
-		response, change, profChange, routineChange, err := session.ProcessMessage(ctx, input)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-			continue
-		}
-
-		fmt.Println("\n  " + response + "\n")
-
-		if profChange != nil {
-			fmt.Println("  Apply profile change? (y/n)")
-			fmt.Print("  > ")
-			if readConfirm(reader) == "y" {
-				if err := session.ApplyProfileChange(profChange); err != nil {
-					fmt.Fprintf(os.Stderr, "  Error applying profile: %v\n", err)
-				} else {
-					fmt.Println("  Profile updated.")
-				}
-			} else {
-				fmt.Println("  Profile change discarded.")
-			}
-		}
-
-		if routineChange != nil {
-			action := "Create"
-			if !routineChange.IsNew {
-				action = "Update"
-			}
-			fmt.Printf("  %s routine %q? (y/n)\n", action, routineChange.Routine.Name)
-			fmt.Print("  > ")
-			if readConfirm(reader) == "y" {
-				if err := session.ApplyRoutineChange(routineChange); err != nil {
-					fmt.Fprintf(os.Stderr, "  Error applying routine: %v\n", err)
-				} else {
-					fmt.Printf("  Routine %q saved.\n", routineChange.Routine.Name)
-				}
-			} else {
-				fmt.Println("  Routine change discarded.")
-			}
-		}
-
-		if change != nil {
-			fmt.Println("  Apply this configuration change? (y/n)")
-			fmt.Print("  > ")
-			if readConfirm(reader) == "y" {
-				if err := session.ApplyChange(change); err != nil {
-					fmt.Fprintf(os.Stderr, "  Error applying: %v\n", err)
-				} else {
-					if change.RemoteLLMWarning {
-						fmt.Println()
-						fmt.Println("  ⚠ This configuration includes a remote LLM provider.")
-						fmt.Println("    Collected results will leave your machine during synthesis.")
-						fmt.Println("    For maximum privacy, use a local LLM provider.")
-						fmt.Println()
-					}
-					fmt.Println("  Configuration updated.")
-				}
-			} else {
-				fmt.Println("  Change discarded.")
-			}
-		}
-	}
 }
