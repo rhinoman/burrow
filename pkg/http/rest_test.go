@@ -225,8 +225,11 @@ func TestExecuteHTTPError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if result.Error != "HTTP 404" {
-		t.Errorf("expected HTTP 404 error, got %q", result.Error)
+	if !strings.Contains(result.Error, "HTTP 404") {
+		t.Errorf("expected HTTP 404 in error, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "not found") {
+		t.Errorf("expected error body in error message, got %q", result.Error)
 	}
 }
 

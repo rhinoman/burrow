@@ -112,12 +112,20 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 	}
 
 	if resp.StatusCode >= 400 {
+		errMsg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		if len(body) > 0 {
+			snippet := body
+			if len(snippet) > 512 {
+				snippet = snippet[:512]
+			}
+			errMsg += ": " + string(snippet)
+		}
 		return &services.Result{
 			Service:   r.name,
 			Tool:      tool,
 			Data:      body,
 			Timestamp: time.Now().UTC(),
-			Error:     fmt.Sprintf("HTTP %d", resp.StatusCode),
+			Error:     errMsg,
 		}, nil
 	}
 

@@ -105,15 +105,15 @@ var initCmd = &cobra.Command{
 // runConversationalInit runs an LLM-driven init session, returning the final config.
 // Returns (nil, nil) if no config was applied, so the caller can fall through to the wizard.
 func runConversationalInit(ctx context.Context, session *configure.Session) (*config.Config, error) {
-	scanner := bufio.NewScanner(os.Stdin)
+	reader := bufio.NewReader(os.Stdin)
 	var appliedConfig *config.Config
 
 	for {
 		fmt.Print("  > ")
-		if !scanner.Scan() {
+		input, err := readMultiLine(reader)
+		if err != nil {
 			break
 		}
-		input := scanner.Text()
 		if input == "done" || input == "quit" || input == "exit" {
 			break
 		}
@@ -132,7 +132,7 @@ func runConversationalInit(ctx context.Context, session *configure.Session) (*co
 		if profChange != nil {
 			fmt.Println("  Apply profile change? (y/n)")
 			fmt.Print("  > ")
-			if scanner.Scan() && scanner.Text() == "y" {
+			if readConfirm(reader) == "y" {
 				if err := session.ApplyProfileChange(profChange); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error applying profile: %v\n", err)
 				} else {
@@ -148,7 +148,7 @@ func runConversationalInit(ctx context.Context, session *configure.Session) (*co
 			}
 			fmt.Printf("  %s routine %q? (y/n)\n", action, routineChange.Routine.Name)
 			fmt.Print("  > ")
-			if scanner.Scan() && scanner.Text() == "y" {
+			if readConfirm(reader) == "y" {
 				if err := session.ApplyRoutineChange(routineChange); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error applying routine: %v\n", err)
 				} else {
@@ -162,7 +162,7 @@ func runConversationalInit(ctx context.Context, session *configure.Session) (*co
 		if change != nil {
 			fmt.Println("  Apply this configuration? (y/n)")
 			fmt.Print("  > ")
-			if scanner.Scan() && scanner.Text() == "y" {
+			if readConfirm(reader) == "y" {
 				if err := session.ApplyChange(change); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error applying: %v\n", err)
 				} else {

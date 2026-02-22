@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jcadam/burrow/pkg/config"
 	"github.com/jcadam/burrow/pkg/configure"
@@ -78,16 +80,53 @@ var configureCmd = &cobra.Command{
 	},
 }
 
+// readMultiLine reads user input, accumulating multiple lines when they
+// arrive together (e.g. pasted text). Single-line typed input is returned
+// immediately. Returns io.EOF when stdin is closed.
+func readMultiLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	if err == io.EOF && line == "" {
+		return "", io.EOF
+	}
+
+	var lines []string
+	if trimmed := strings.TrimRight(line, "\n\r"); trimmed != "" {
+		lines = append(lines, trimmed)
+	}
+
+	// Accumulate additional buffered lines (paste detection).
+	for reader.Buffered() > 0 {
+		extra, err := reader.ReadString('\n')
+		if trimmed := strings.TrimRight(extra, "\n\r"); trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+// readConfirm reads a single line for y/n confirmation.
+func readConfirm(reader *bufio.Reader) string {
+	line, _ := reader.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
 // runConversationalConfigure runs an LLM-driven config modification loop.
 func runConversationalConfigure(ctx context.Context, session *configure.Session) error {
-	scanner := bufio.NewScanner(os.Stdin)
+	reader := bufio.NewReader(os.Stdin)
 
 	for {
 		fmt.Print("  > ")
-		if !scanner.Scan() {
+		input, err := readMultiLine(reader)
+		if err != nil {
 			return nil
 		}
-		input := scanner.Text()
 		if input == "done" || input == "quit" || input == "exit" {
 			return nil
 		}
@@ -106,7 +145,7 @@ func runConversationalConfigure(ctx context.Context, session *configure.Session)
 		if profChange != nil {
 			fmt.Println("  Apply profile change? (y/n)")
 			fmt.Print("  > ")
-			if scanner.Scan() && scanner.Text() == "y" {
+			if readConfirm(reader) == "y" {
 				if err := session.ApplyProfileChange(profChange); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error applying profile: %v\n", err)
 				} else {
@@ -124,7 +163,7 @@ func runConversationalConfigure(ctx context.Context, session *configure.Session)
 			}
 			fmt.Printf("  %s routine %q? (y/n)\n", action, routineChange.Routine.Name)
 			fmt.Print("  > ")
-			if scanner.Scan() && scanner.Text() == "y" {
+			if readConfirm(reader) == "y" {
 				if err := session.ApplyRoutineChange(routineChange); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error applying routine: %v\n", err)
 				} else {
@@ -138,7 +177,7 @@ func runConversationalConfigure(ctx context.Context, session *configure.Session)
 		if change != nil {
 			fmt.Println("  Apply this configuration change? (y/n)")
 			fmt.Print("  > ")
-			if scanner.Scan() && scanner.Text() == "y" {
+			if readConfirm(reader) == "y" {
 				if err := session.ApplyChange(change); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error applying: %v\n", err)
 				} else {
