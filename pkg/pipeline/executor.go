@@ -11,6 +11,7 @@ import (
 
 	"github.com/jcadam/burrow/pkg/charts"
 	bcontext "github.com/jcadam/burrow/pkg/context"
+	"github.com/jcadam/burrow/pkg/debug"
 	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/reports"
 	"github.com/jcadam/burrow/pkg/services"
@@ -26,6 +27,7 @@ type Executor struct {
 	ledger      *bcontext.Ledger
 	profile     *profile.Profile
 	randFunc    func(max int) int
+	debug       *debug.Logger
 }
 
 // NewExecutor creates an executor with the given dependencies.
@@ -53,9 +55,16 @@ func (e *Executor) SetRandFunc(f func(max int) int) {
 	e.randFunc = f
 }
 
+// SetDebug enables debug logging for pipeline execution. Nil disables it.
+func (e *Executor) SetDebug(l *debug.Logger) {
+	e.debug = l
+}
+
 // Run executes a routine: queries all sources in parallel with jitter,
 // synthesizes results, saves report, and indexes in context ledger.
 func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, error) {
+	e.debug.Section(fmt.Sprintf("Running %q (%d sources, jitter=%ds)", routine.Name, len(routine.Sources), routine.Jitter))
+
 	results := make([]*services.Result, len(routine.Sources))
 	rawResults := make(map[string][]byte)
 	var mu sync.Mutex
@@ -76,10 +85,13 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 				}
 			}()
 
+			e.debug.Printf("source %d: %s/%s params=%v", idx, src.Service, src.Tool, src.Params)
+
 			// Apply jitter before executing
 			if routine.Jitter > 0 {
 				jitterSecs := e.randFunc(routine.Jitter)
 				if jitterSecs > 0 {
+					e.debug.Printf("  jitter: %ds", jitterSecs)
 					timer := time.NewTimer(time.Duration(jitterSecs) * time.Second)
 					select {
 					case <-ctx.Done():
@@ -125,10 +137,17 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 					Timestamp: time.Now().UTC(),
 					Error:     err.Error(),
 				}
+				e.debug.Printf("  source %d result: ERROR %v", idx, err)
 				return
 			}
 
 			results[idx] = result
+
+			if result.Error != "" {
+				e.debug.Printf("  source %d result: FAIL (%s)", idx, result.Error)
+			} else {
+				e.debug.Printf("  source %d result: OK (%d bytes, url=%s)", idx, len(result.Data), result.URL)
+			}
 
 			if len(result.Data) > 0 {
 				key := fmt.Sprintf("%d-%s-%s", idx, result.Service, result.Tool)

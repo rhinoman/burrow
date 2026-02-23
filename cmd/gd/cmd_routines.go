@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/jcadam/burrow/pkg/cache"
 	"github.com/jcadam/burrow/pkg/config"
 	bcontext "github.com/jcadam/burrow/pkg/context"
+	"github.com/jcadam/burrow/pkg/debug"
 	bhttp "github.com/jcadam/burrow/pkg/http"
 	"github.com/jcadam/burrow/pkg/mcp"
 	"github.com/jcadam/burrow/pkg/pipeline"
@@ -27,6 +30,8 @@ func init() {
 	routinesCmd.AddCommand(routinesRunCmd)
 	routinesCmd.AddCommand(routinesHistoryCmd)
 	routinesCmd.AddCommand(routinesTestCmd)
+
+	routinesRunCmd.Flags().Bool("debug", false, "Print debug output (full requests, responses, timing)")
 }
 
 var routinesCmd = &cobra.Command{
@@ -106,8 +111,16 @@ var routinesRunCmd = &cobra.Command{
 		// template expansion in tool paths.
 		prof, _ := profile.Load(burrowDir)
 
+		// Set up debug logging if requested.
+		debugFlag, _ := cmd.Flags().GetBool("debug")
+		var dbg *debug.Logger
+		if debugFlag {
+			dbg = debug.NewLogger(os.Stderr)
+			dbg.Section("routine: " + routineName)
+		}
+
 		// Build service registry
-		registry, err := buildRegistry(cfg, burrowDir, prof)
+		registry, err := buildRegistry(cfg, burrowDir, prof, dbg)
 		if err != nil {
 			return err
 		}
@@ -116,6 +129,11 @@ var routinesRunCmd = &cobra.Command{
 		synth, err := buildSynthesizer(routine, cfg)
 		if err != nil {
 			return fmt.Errorf("configuring synthesizer: %w", err)
+		}
+
+		// Wrap synthesizer with debug logging if enabled.
+		if dbg != nil {
+			synth = &debugSynthesizer{inner: synth, dbg: dbg}
 		}
 
 		// Create context ledger
@@ -133,6 +151,9 @@ var routinesRunCmd = &cobra.Command{
 		}
 		if prof != nil {
 			executor.SetProfile(prof)
+		}
+		if dbg != nil {
+			executor.SetDebug(dbg)
 		}
 
 		report, err := executor.Run(cmd.Context(), routine)
@@ -227,7 +248,7 @@ var routinesTestCmd = &cobra.Command{
 		// template expansion in tool paths.
 		prof, _ := profile.Load(burrowDir)
 
-		registry, err := buildRegistry(cfg, burrowDir, prof)
+		registry, err := buildRegistry(cfg, burrowDir, prof, nil)
 		if err != nil {
 			return err
 		}
@@ -276,7 +297,9 @@ var routinesTestCmd = &cobra.Command{
 // MCP clients, and result caching. burrowDir is used for cache storage.
 // prof is optional — when non-nil, REST services get a template expand function
 // for resolving {{profile.X}} references in tool paths.
-func buildRegistry(cfg *config.Config, burrowDir string, prof *profile.Profile) (*services.Registry, error) {
+// dbg is optional — when non-nil, a debug transport is injected into each service's
+// HTTP client for request/response logging.
+func buildRegistry(cfg *config.Config, burrowDir string, prof *profile.Profile, dbg *debug.Logger) (*services.Registry, error) {
 	var privCfg *privacy.Config
 	if cfg.Privacy.StripReferrers || cfg.Privacy.RandomizeUserAgent || cfg.Privacy.MinimizeRequests {
 		privCfg = &privacy.Config{
@@ -308,12 +331,26 @@ func buildRegistry(cfg *config.Config, burrowDir string, prof *profile.Profile) 
 					return profile.Expand(s, p)
 				})
 			}
+			if dbg != nil {
+				restSvc.WrapTransport(func(rt http.RoundTripper) http.RoundTripper {
+					return debug.NewTransport(rt, dbg)
+				})
+			}
 			svc = restSvc
 		case "mcp":
 			httpClient := mcp.NewHTTPClient(svcCfg.Auth, privCfg, proxyURL)
+			if dbg != nil {
+				httpClient.Transport = debug.NewTransport(httpClient.Transport, dbg)
+			}
 			svc = mcp.NewMCPService(svcCfg.Name, svcCfg.Endpoint, httpClient)
 		case "rss":
-			svc = brss.NewRSSService(svcCfg, privCfg, proxyURL)
+			rssSvc := brss.NewRSSService(svcCfg, privCfg, proxyURL)
+			if dbg != nil {
+				rssSvc.WrapTransport(func(rt http.RoundTripper) http.RoundTripper {
+					return debug.NewTransport(rt, dbg)
+				})
+			}
+			svc = rssSvc
 		default:
 			fmt.Fprintf(os.Stderr, "warning: unknown service type %q for %q, skipping\n", svcCfg.Type, svcCfg.Name)
 			continue
@@ -363,4 +400,32 @@ func buildSynthesizer(routine *pipeline.Routine, cfg *config.Config) (synthesis.
 	stripAttribution := provCfg.Privacy == "remote" && cfg.Privacy.StripAttributionForRemote
 
 	return synthesis.NewLLMSynthesizer(provider, stripAttribution), nil
+}
+
+// debugSynthesizer wraps a Synthesizer to log timing and sizes when --debug is active.
+type debugSynthesizer struct {
+	inner synthesis.Synthesizer
+	dbg   *debug.Logger
+}
+
+func (d *debugSynthesizer) Synthesize(ctx context.Context, title string, systemPrompt string, results []*services.Result) (string, error) {
+	d.dbg.Section("Synthesizer")
+	d.dbg.Printf("title: %s", title)
+	d.dbg.Printf("system prompt: %d chars", len(systemPrompt))
+	totalData := 0
+	for _, r := range results {
+		totalData += len(r.Data)
+	}
+	d.dbg.Printf("input: %d sources, %d bytes total data", len(results), totalData)
+
+	start := time.Now()
+	md, err := d.inner.Synthesize(ctx, title, systemPrompt, results)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		d.dbg.Printf("synthesis error (%s): %v", elapsed.Round(time.Millisecond), err)
+		return md, err
+	}
+	d.dbg.Printf("synthesis complete (%s): %d chars markdown", elapsed.Round(time.Millisecond), len(md))
+	return md, nil
 }

@@ -113,7 +113,7 @@ func runInteractive(ctx context.Context) error {
 	prof, _ := profile.Load(burrowDir)
 
 	// Build registry
-	registry, err := buildRegistry(cfg, burrowDir, prof)
+	registry, err := buildRegistry(cfg, burrowDir, prof, nil)
 	if err != nil {
 		return fmt.Errorf("building service registry: %w", err)
 	}

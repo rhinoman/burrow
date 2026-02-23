@@ -107,7 +107,7 @@ func runRoutine(ctx context.Context, burrowDir string, routine *pipeline.Routine
 	// needed before buildRegistry for template expansion in tool paths.
 	prof, _ := profile.Load(burrowDir)
 
-	registry, err := buildRegistry(cfg, burrowDir, prof)
+	registry, err := buildRegistry(cfg, burrowDir, prof, nil)
 	if err != nil {
 		return err
 	}

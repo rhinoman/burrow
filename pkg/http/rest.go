@@ -66,6 +66,12 @@ func NewRESTService(cfg config.ServiceConfig, privacyCfg *privacy.Config, proxyU
 	}
 }
 
+// WrapTransport decorates the service's HTTP transport. This is used to inject
+// debug logging without changing the construction path.
+func (r *RESTService) WrapTransport(wrap func(http.RoundTripper) http.RoundTripper) {
+	r.client.Transport = wrap(r.client.Transport)
+}
+
 func (r *RESTService) Name() string { return r.name }
 
 // Execute runs a named tool against the REST endpoint.

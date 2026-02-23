@@ -60,6 +60,12 @@ func NewRSSService(cfg config.ServiceConfig, privacyCfg *privacy.Config, proxyUR
 	}
 }
 
+// WrapTransport decorates the service's HTTP transport. This is used to inject
+// debug logging without changing the construction path.
+func (r *RSSService) WrapTransport(wrap func(http.RoundTripper) http.RoundTripper) {
+	r.client.Transport = wrap(r.client.Transport)
+}
+
 func (r *RSSService) Name() string { return r.name }
 
 // Execute runs the "feed" tool, which fetches and parses the RSS/Atom feed.
