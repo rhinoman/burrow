@@ -13,6 +13,7 @@ import (
 
 	"github.com/jcadam/burrow/pkg/charts"
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
 
 // lookPath is an injectable wrapper around exec.LookPath for testing.
@@ -117,7 +118,10 @@ func convertHTMLToPDF(conv *PDFConverter, htmlContent string) ([]byte, error) {
 // fenced code blocks are replaced with embedded PNG images (base64 data URIs).
 func ExportHTML(markdown, title, reportDir string) (string, error) {
 	var buf bytes.Buffer
-	if err := goldmark.Convert([]byte(markdown), &buf); err != nil {
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+	)
+	if err := md.Convert([]byte(markdown), &buf); err != nil {
 		return "", fmt.Errorf("converting markdown to HTML: %w", err)
 	}
 

@@ -197,6 +197,36 @@ func TestExportPDFIntegration(t *testing.T) {
 	fmt.Printf("PDF export successful (%d bytes) using %s\n", info.Size(), conv.Name)
 }
 
+func TestExportHTMLGFMTable(t *testing.T) {
+	md := "# Report\n\n| Name | Value |\n|------|-------|\n| Alpha | 100 |\n| Beta | 200 |\n"
+	html, err := ExportHTML(md, "Table Report", "")
+	if err != nil {
+		t.Fatalf("ExportHTML: %v", err)
+	}
+
+	if !strings.Contains(html, "<table>") {
+		t.Error("expected <table> element from GFM table")
+	}
+	if !strings.Contains(html, "<th>Name</th>") {
+		t.Error("expected table header Name")
+	}
+	if !strings.Contains(html, "<td>Alpha</td>") {
+		t.Error("expected table cell Alpha")
+	}
+}
+
+func TestExportHTMLGFMAutolink(t *testing.T) {
+	md := "Visit https://example.com for details.\n"
+	html, err := ExportHTML(md, "Autolink Report", "")
+	if err != nil {
+		t.Fatalf("ExportHTML: %v", err)
+	}
+
+	if !strings.Contains(html, `<a href="https://example.com"`) {
+		t.Error("expected autolinked URL in HTML output")
+	}
+}
+
 func TestExportHTMLChartFallbackTable(t *testing.T) {
 	// No reportDir — charts should fall back to HTML tables
 	md := "# Report\n\n```chart\ntype: bar\ntitle: \"Fallback\"\nx: [\"A\", \"B\"]\ny: [10, 20]\n```\n"

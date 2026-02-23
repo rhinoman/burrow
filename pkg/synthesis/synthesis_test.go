@@ -253,6 +253,27 @@ func TestOllamaNoTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestLLMSynthesizerStaticDocumentInstruction(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if !strings.Contains(provider.lastUser, "static report document") {
+		t.Error("expected static-document instruction in user prompt")
+	}
+	if !strings.Contains(provider.lastUser, "Reply to refine") {
+		t.Error("expected explicit prohibition of conversational closing")
+	}
+}
+
 func TestLLMSynthesizerPreserveAttribution(t *testing.T) {
 	provider := &fakeProvider{}
 	synth := NewLLMSynthesizer(provider, false)

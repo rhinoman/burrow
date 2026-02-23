@@ -128,6 +128,12 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 		userPrompt.WriteString("\n")
 	}
 
+	userPrompt.WriteString("\n---\n")
+	userPrompt.WriteString("Important: This is a static report document, not a conversation. ")
+	userPrompt.WriteString("Do not include conversational elements such as greetings, sign-offs, ")
+	userPrompt.WriteString("offers to help, or phrases like \"Let me know if you have questions\" ")
+	userPrompt.WriteString("or \"Reply to refine.\" End the report with the final section's content.\n")
+
 	return l.provider.Complete(ctx, systemPrompt, userPrompt.String())
 }
 
