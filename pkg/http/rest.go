@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -160,7 +161,30 @@ func (r *RESTService) Execute(ctx context.Context, tool string, params map[strin
 	}, nil
 }
 
+// unreplacedPlaceholder matches {name} placeholders remaining after substitution,
+// excluding Go template expressions {{...}} which are handled by expandFunc.
+var unreplacedPlaceholder = regexp.MustCompile(`\{([^{}]+)\}`)
+
 func (r *RESTService) buildURL(path string, tc config.ToolConfig, params map[string]string) (string, error) {
+	// Phase 1: Substitute path parameters.
+	for _, pc := range tc.Params {
+		if pc.In != "path" {
+			continue
+		}
+		val, ok := params[pc.Name]
+		if !ok {
+			return "", fmt.Errorf("missing required path parameter %q", pc.Name)
+		}
+		placeholder := "{" + pc.MapsTo + "}"
+		path = strings.ReplaceAll(path, placeholder, url.PathEscape(val))
+	}
+
+	// Phase 1b: Check for unreplaced path placeholders.
+	if m := unreplacedPlaceholder.FindString(path); m != "" {
+		return "", fmt.Errorf("unreplaced path placeholder %s in %q", m, path)
+	}
+
+	// Phase 2: Build URL with query parameters.
 	base, err := url.Parse(r.endpoint)
 	if err != nil {
 		return "", err
@@ -178,6 +202,10 @@ func (r *RESTService) buildURL(path string, tc config.ToolConfig, params map[str
 	// (e.g., /search?type=active). Mapped params take precedence on collision.
 	query := resolved.Query()
 	for _, pc := range tc.Params {
+		// Skip path params — already substituted above
+		if pc.In == "path" {
+			continue
+		}
 		// Skip the body param — it's sent as the request body, not a query param
 		if tc.Body != "" && pc.Name == tc.Body {
 			continue

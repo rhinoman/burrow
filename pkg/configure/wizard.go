@@ -275,17 +275,25 @@ func (w *Wizard) configureFirstService(cfg *config.Config) error {
 		}
 
 		// Optional params
-		w.print("  How many query parameters? [0]: ")
+		w.print("  How many parameters? [0]: ")
 		numStr := w.prompt("")
 		numParams, _ := strconv.Atoi(strings.TrimSpace(numStr))
 		for i := 0; i < numParams; i++ {
 			pName := w.prompt(fmt.Sprintf("  Param %d name: ", i+1))
 			pMapsTo := w.prompt(fmt.Sprintf("  Param %d maps to (API param): ", i+1))
-			tool.Params = append(tool.Params, config.ParamConfig{
+			pIn := strings.TrimSpace(w.prompt(fmt.Sprintf("  Param %d location (path/query) [query]: ", i+1)))
+			if pIn == "" {
+				pIn = "query"
+			}
+			pc := config.ParamConfig{
 				Name:   strings.TrimSpace(pName),
 				Type:   "string",
 				MapsTo: strings.TrimSpace(pMapsTo),
-			})
+			}
+			if pIn == "path" {
+				pc.In = "path"
+			}
+			tool.Params = append(tool.Params, pc)
 		}
 
 		svc.Tools = append(svc.Tools, tool)

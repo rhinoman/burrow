@@ -509,6 +509,64 @@ func TestSaveHasHeader(t *testing.T) {
 	}
 }
 
+func TestSaveBackupsExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write an initial config.
+	original := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{Name: "local/llama", Type: "ollama", Model: "llama3", Privacy: "local"},
+			},
+		},
+	}
+	if err := Save(dir, original); err != nil {
+		t.Fatalf("first Save: %v", err)
+	}
+
+	// Read back the exact file contents (including header).
+	originalBytes, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading original config: %v", err)
+	}
+
+	// No backup should exist yet (first write).
+	backupPath := filepath.Join(dir, "config.yaml.bak")
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Fatal("backup should not exist after first Save")
+	}
+
+	// Save a different config over the first.
+	updated := &Config{
+		LLM: LLMConfig{
+			Providers: []ProviderConfig{
+				{Name: "local/qwen", Type: "ollama", Model: "qwen2.5:14b", Privacy: "local"},
+			},
+		},
+	}
+	if err := Save(dir, updated); err != nil {
+		t.Fatalf("second Save: %v", err)
+	}
+
+	// Backup should now exist with the original file contents (including header).
+	backupBytes, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if string(backupBytes) != string(originalBytes) {
+		t.Errorf("backup contents don't match original file.\ngot:\n%s\nwant:\n%s", backupBytes, originalBytes)
+	}
+
+	// The actual config.yaml should contain the updated config.
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.LLM.Providers[0].Name != "local/qwen" {
+		t.Errorf("config.yaml should have updated provider, got %q", loaded.LLM.Providers[0].Name)
+	}
+}
+
 func TestDeepCopy(t *testing.T) {
 	original := &Config{
 		Services: []ServiceConfig{
@@ -827,6 +885,142 @@ func TestValidateRSSNegativeMaxItems(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "negative max_items") {
 		t.Errorf("expected 'negative max_items' in error, got: %v", err)
+	}
+}
+
+func TestValidatePathParamValid(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{
+				Name:     "svc",
+				Type:     "rest",
+				Endpoint: "http://example.com",
+				Tools: []ToolConfig{
+					{
+						Name:   "get_user",
+						Method: "GET",
+						Path:   "/users/{id}/posts",
+						Params: []ParamConfig{
+							{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("valid path param config should pass: %v", err)
+	}
+}
+
+func TestValidatePathParamInvalidIn(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{
+				Name:     "svc",
+				Type:     "rest",
+				Endpoint: "http://example.com",
+				Tools: []ToolConfig{
+					{
+						Name:   "fetch",
+						Method: "GET",
+						Path:   "/data",
+						Params: []ParamConfig{
+							{Name: "id", Type: "string", MapsTo: "id", In: "header"},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for invalid in value")
+	}
+	if !strings.Contains(err.Error(), "invalid in value") {
+		t.Errorf("expected 'invalid in value' error, got: %v", err)
+	}
+}
+
+func TestValidatePathParamOrphanPlaceholder(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{
+				Name:     "svc",
+				Type:     "rest",
+				Endpoint: "http://example.com",
+				Tools: []ToolConfig{
+					{
+						Name:   "get_user",
+						Method: "GET",
+						Path:   "/users/{id}",
+						// No in:path param for {id}
+					},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for orphan placeholder")
+	}
+	if !strings.Contains(err.Error(), "placeholder but no param") {
+		t.Errorf("expected orphan placeholder error, got: %v", err)
+	}
+}
+
+func TestValidatePathParamNoPlaceholder(t *testing.T) {
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{
+				Name:     "svc",
+				Type:     "rest",
+				Endpoint: "http://example.com",
+				Tools: []ToolConfig{
+					{
+						Name:   "get_user",
+						Method: "GET",
+						Path:   "/users",
+						Params: []ParamConfig{
+							{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for in:path param without placeholder")
+	}
+	if !strings.Contains(err.Error(), "no {id} placeholder") {
+		t.Errorf("expected 'no placeholder' error, got: %v", err)
+	}
+}
+
+func TestValidatePathParamIgnoresGoTemplates(t *testing.T) {
+	// {{profile "org"}} should not be confused with a path placeholder.
+	cfg := &Config{
+		Services: []ServiceConfig{
+			{
+				Name:     "svc",
+				Type:     "rest",
+				Endpoint: "http://example.com",
+				Tools: []ToolConfig{
+					{
+						Name:   "get_user",
+						Method: "GET",
+						Path:   `/orgs/{{profile "org"}}/users/{id}`,
+						Params: []ParamConfig{
+							{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Go templates should not interfere with path param validation: %v", err)
 	}
 }
 

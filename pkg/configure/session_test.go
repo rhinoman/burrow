@@ -763,6 +763,12 @@ func TestApplyChangeCreatesBackup(t *testing.T) {
 			},
 		},
 	}
+
+	// Write the initial config to disk so Save() has something to back up.
+	if err := config.Save(dir, cfg); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
 	session := NewSession(dir, cfg, nil)
 
 	proposed := cfg.DeepCopy()
@@ -786,6 +792,10 @@ func TestApplyChangeCreatesBackup(t *testing.T) {
 	// Backup should contain the original config's LLM provider.
 	if !strings.Contains(string(data), "local/llama") {
 		t.Error("backup does not contain original config data")
+	}
+	// Backup should include the header comment (it's a byte-for-byte copy of the file).
+	if !strings.Contains(string(data), "# Burrow configuration") {
+		t.Error("backup should include the file header comment")
 	}
 }
 
@@ -1078,6 +1088,59 @@ func TestProcessMessageWarnsOnBadConfigYAML(t *testing.T) {
 	}
 }
 
+func TestSessionHistoryTrimming(t *testing.T) {
+	provider := &fakeProvider{response: "Got it."}
+	cfg := &config.Config{}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	// Send more messages than the hard cap allows.
+	for i := 0; i < maxHistoryTurns+5; i++ {
+		session.ProcessMessage(context.Background(), "message") //nolint:errcheck
+	}
+
+	// History should be capped at maxHistoryTurns * 2 messages.
+	// Note: the last user message is appended and trimmed before the LLM call,
+	// then the assistant response is appended after, so we get maxHistoryTurns*2 + 1
+	// at most (the final assistant append may push one over, but trimHistory runs
+	// before building conversation). The cap applies to what's sent to the LLM.
+	// After the last ProcessMessage: trim to 20, then append assistant = 21.
+	// But on next call it will trim again. Let's just check it's bounded.
+	maxExpected := maxHistoryTurns*2 + 1 // +1 for the trailing assistant message
+	if len(session.history) > maxExpected {
+		t.Errorf("history should be at most %d, got %d", maxExpected, len(session.history))
+	}
+}
+
+func TestSessionHistoryByteBudget(t *testing.T) {
+	// Each response is ~2KB, so after several turns the byte budget should kick in.
+	largeResponse := strings.Repeat("x", 2000)
+	provider := &fakeProvider{response: largeResponse}
+	cfg := &config.Config{}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	for i := 0; i < 20; i++ {
+		session.ProcessMessage(context.Background(), strings.Repeat("y", 500)) //nolint:errcheck
+	}
+
+	// Compute the serialized size of what trimHistory would leave for the LLM.
+	// Simulate what the conversation builder does (excluding the trailing assistant msg).
+	// trimHistory runs after user append, before the LLM call, so measure after
+	// stripping the last assistant message.
+	historyForLLM := session.history
+	if len(historyForLLM) > 0 && historyForLLM[len(historyForLLM)-1].Role == "assistant" {
+		historyForLLM = historyForLLM[:len(historyForLLM)-1]
+	}
+	size := 0
+	for _, m := range historyForLLM {
+		size += len(m.Role) + len(m.Content) + 6
+	}
+	if size > maxConversationBytes+3000 {
+		// Allow some slack for the final user message that was appended but not yet
+		// trimmed (trimHistory runs after append but the assistant response adds more).
+		t.Errorf("conversation size %d exceeds budget %d by too much", size, maxConversationBytes)
+	}
+}
+
 func TestExtractYAMLBlockCaseInsensitive(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1136,6 +1199,257 @@ func TestExtractProfileYAMLBlockCaseInsensitive(t *testing.T) {
 				t.Errorf("extractProfileYAMLBlock() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStripCodeBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		input string
+		want string
+	}{
+		{
+			name:  "strips yaml block",
+			input: "Here's the config:\n```yaml\nservices:\n  - name: test\n```\nDone!",
+			want:  "Here's the config:\n[proposed config change]\nDone!",
+		},
+		{
+			name:  "strips yml block",
+			input: "Config:\n```yml\nkey: value\n```\nOK",
+			want:  "Config:\n[proposed config change]\nOK",
+		},
+		{
+			name:  "strips profile block",
+			input: "Profile:\n```yaml profile\nname: Trivyn\ninterests:\n  - geo\n```\nDone!",
+			want:  "Profile:\n[proposed profile change]\nDone!",
+		},
+		{
+			name:  "strips routine block",
+			input: "Routine:\n```yaml routine morning-intel\nreport:\n  title: Test\nsources:\n  - service: svc1\n    tool: search\n```\nCreated!",
+			want:  "Routine:\n[proposed routine change]\nCreated!",
+		},
+		{
+			name:  "preserves non-yaml code blocks",
+			input: "Here's JSON:\n```json\n{\"key\": \"value\"}\n```\nDone!",
+			want:  "Here's JSON:\n```json\n{\"key\": \"value\"}\n```\nDone!",
+		},
+		{
+			name:  "case insensitive",
+			input: "Config:\n```YAML\nkey: value\n```\nOK",
+			want:  "Config:\n[proposed config change]\nOK",
+		},
+		{
+			name:  "unclosed block returns original",
+			input: "Config:\n```yaml\nkey: value",
+			want:  "Config:\n```yaml\nkey: value",
+		},
+		{
+			name:  "multiple blocks stripped",
+			input: "Config:\n```yaml\nservices: []\n```\nAnd profile:\n```yaml profile\nname: Test\n```\nDone",
+			want:  "Config:\n[proposed config change]\nAnd profile:\n[proposed profile change]\nDone",
+		},
+		{
+			name:  "no code blocks unchanged",
+			input: "Just some text with no blocks.",
+			want:  "Just some text with no blocks.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripCodeBlocks(tt.input)
+			if got != tt.want {
+				t.Errorf("stripCodeBlocks() =\n%q\nwant:\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHistoryDoesNotContainYAML(t *testing.T) {
+	yamlResponse := "I'll update the config.\n```yaml\nservices:\n  - name: test\n    type: rest\n    endpoint: https://example.com\n    auth:\n      method: none\n```\nThis adds a test service."
+
+	provider := &fakeProvider{response: yamlResponse}
+	cfg := &config.Config{}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	response, _, _, _, _, err := session.ProcessMessage(context.Background(), "add a test service")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+
+	// The returned response should still contain the full YAML.
+	if !strings.Contains(response, "services:") {
+		t.Error("expected full YAML in returned response")
+	}
+
+	// But the history entry should have the YAML stripped.
+	lastMsg := session.history[len(session.history)-1]
+	if lastMsg.Role != "assistant" {
+		t.Fatalf("expected last history entry to be assistant, got %q", lastMsg.Role)
+	}
+	if strings.Contains(lastMsg.Content, "services:") {
+		t.Error("history should not contain YAML block content")
+	}
+	if !strings.Contains(lastMsg.Content, "[proposed config change]") {
+		t.Error("history should contain placeholder for stripped YAML")
+	}
+}
+
+func TestProtectFromFragmentWipe(t *testing.T) {
+	tests := []struct {
+		name             string
+		original         *config.Config
+		proposed         *config.Config
+		wantServices     int
+		wantProviders    int
+		wantRoutes       int
+	}{
+		{
+			name: "fragment zeroes services - restored",
+			original: &config.Config{
+				Services: []config.ServiceConfig{
+					{Name: "svc1", Type: "rest", Endpoint: "https://example.com", Auth: config.AuthConfig{Method: "none"}},
+				},
+			},
+			proposed: &config.Config{
+				Services: []config.ServiceConfig{}, // LLM returned `services: []`
+			},
+			wantServices: 1,
+		},
+		{
+			name: "fragment zeroes LLM providers - restored",
+			original: &config.Config{
+				LLM: config.LLMConfig{
+					Providers: []config.ProviderConfig{
+						{Name: "local/llama", Type: "ollama", Model: "llama3", Privacy: "local"},
+					},
+				},
+			},
+			proposed: &config.Config{
+				LLM: config.LLMConfig{Providers: []config.ProviderConfig{}}, // LLM returned `llm: {providers: []}`
+			},
+			wantProviders: 1,
+		},
+		{
+			name: "fragment zeroes privacy routes - restored",
+			original: &config.Config{
+				Services: []config.ServiceConfig{
+					{Name: "svc1", Type: "rest", Endpoint: "https://example.com", Auth: config.AuthConfig{Method: "none"}},
+				},
+				Privacy: config.PrivacyConfig{
+					Routes: []config.RouteConfig{
+						{Service: "svc1", Proxy: "socks5://localhost:9050"},
+					},
+				},
+			},
+			proposed: &config.Config{
+				Services: []config.ServiceConfig{
+					{Name: "svc1", Type: "rest", Endpoint: "https://example.com", Auth: config.AuthConfig{Method: "none"}},
+				},
+				Privacy: config.PrivacyConfig{Routes: []config.RouteConfig{}},
+			},
+			wantServices: 1,
+			wantRoutes:   1,
+		},
+		{
+			name: "fragment with valid data - not overridden",
+			original: &config.Config{
+				Services: []config.ServiceConfig{
+					{Name: "svc1", Type: "rest", Endpoint: "https://example.com", Auth: config.AuthConfig{Method: "none"}},
+				},
+			},
+			proposed: &config.Config{
+				Services: []config.ServiceConfig{
+					{Name: "svc1", Type: "rest", Endpoint: "https://example.com", Auth: config.AuthConfig{Method: "none"}},
+					{Name: "svc2", Type: "rest", Endpoint: "https://new.example.com", Auth: config.AuthConfig{Method: "none"}},
+				},
+			},
+			wantServices: 2,
+		},
+		{
+			name:         "both empty - no restore no panic",
+			original:     &config.Config{},
+			proposed:     &config.Config{},
+			wantServices: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protectFromFragmentWipe(tt.original, tt.proposed)
+			if len(tt.proposed.Services) != tt.wantServices {
+				t.Errorf("services: got %d, want %d", len(tt.proposed.Services), tt.wantServices)
+			}
+			if tt.wantProviders > 0 && len(tt.proposed.LLM.Providers) != tt.wantProviders {
+				t.Errorf("providers: got %d, want %d", len(tt.proposed.LLM.Providers), tt.wantProviders)
+			}
+			if tt.wantRoutes > 0 && len(tt.proposed.Privacy.Routes) != tt.wantRoutes {
+				t.Errorf("routes: got %d, want %d", len(tt.proposed.Privacy.Routes), tt.wantRoutes)
+			}
+		})
+	}
+}
+
+func TestProcessMessageFragmentDoesNotWipeConfig(t *testing.T) {
+	// Simulate the LLM returning a fragment that mentions services but
+	// includes an empty llm section — the original providers must survive.
+	fragmentResponse := "I'll add the new service.\n" +
+		"```yaml\n" +
+		"services:\n" +
+		"  - name: existing-svc\n" +
+		"    type: rest\n" +
+		"    endpoint: https://api.example.com\n" +
+		"    auth:\n" +
+		"      method: api_key\n" +
+		"      key: ${REDACTED}\n" +
+		"  - name: new-svc\n" +
+		"    type: rest\n" +
+		"    endpoint: https://new.example.com\n" +
+		"    auth:\n" +
+		"      method: none\n" +
+		"llm:\n" +
+		"  providers: []\n" +
+		"```\n" +
+		"Done!"
+
+	provider := &fakeProvider{response: fragmentResponse}
+	cfg := &config.Config{
+		Services: []config.ServiceConfig{
+			{
+				Name:     "existing-svc",
+				Type:     "rest",
+				Endpoint: "https://api.example.com",
+				Auth:     config.AuthConfig{Method: "api_key", Key: "${MY_KEY}"},
+			},
+		},
+		LLM: config.LLMConfig{
+			Providers: []config.ProviderConfig{
+				{Name: "local/llama", Type: "ollama", Model: "llama3", Privacy: "local"},
+			},
+		},
+	}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	_, change, _, _, _, err := session.ProcessMessage(context.Background(), "add a new service")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if change == nil {
+		t.Fatal("expected a change")
+	}
+
+	// The LLM returned `llm: {providers: []}` but the original had a provider.
+	// protectFromFragmentWipe should have restored it.
+	if len(change.Config.LLM.Providers) != 1 {
+		t.Fatalf("expected 1 LLM provider preserved, got %d", len(change.Config.LLM.Providers))
+	}
+	if change.Config.LLM.Providers[0].Name != "local/llama" {
+		t.Errorf("expected provider local/llama, got %q", change.Config.LLM.Providers[0].Name)
+	}
+
+	// Services should still reflect the LLM's update (2 services).
+	if len(change.Config.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(change.Config.Services))
 	}
 }
 

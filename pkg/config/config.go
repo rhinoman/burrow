@@ -58,6 +58,7 @@ type ParamConfig struct {
 	Name   string `yaml:"name"`
 	Type   string `yaml:"type"`
 	MapsTo string `yaml:"maps_to"`
+	In     string `yaml:"in,omitempty"` // "path" or "query" (default: "query")
 }
 
 // LLMConfig defines available LLM providers.
@@ -162,6 +163,24 @@ func Load(burrowDir string) (*Config, error) {
 	return &cfg, nil
 }
 
+// templatePattern matches Go text/template expressions like {{...}}.
+var templatePattern = regexp.MustCompile(`\{\{.*?\}\}`)
+
+// pathPlaceholderPattern matches single-brace path placeholders like {id}.
+var pathPlaceholderPattern = regexp.MustCompile(`\{([^{}]+)\}`)
+
+// extractPathPlaceholders returns the set of {name} placeholders in a tool path,
+// ignoring Go template expressions ({{...}}) to avoid collisions.
+func extractPathPlaceholders(path string) map[string]bool {
+	cleaned := templatePattern.ReplaceAllString(path, "")
+	matches := pathPlaceholderPattern.FindAllStringSubmatch(cleaned, -1)
+	result := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		result[m[1]] = true
+	}
+	return result
+}
+
 // envVarPattern matches both ${VAR_NAME} and $VAR_NAME forms.
 // The braced form allows any characters except }. The bare form
 // matches standard env var names: letters/underscore start, then
@@ -208,8 +227,15 @@ func Save(burrowDir string, cfg *Config) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 
-	header := "# Burrow configuration — https://github.com/jcadam/burrow\n# Edit this file directly or use: gd configure\n\n"
 	path := filepath.Join(burrowDir, "config.yaml")
+
+	// Back up existing config before overwriting.
+	if existing, err := os.ReadFile(path); err == nil {
+		backupPath := filepath.Join(burrowDir, "config.yaml.bak")
+		os.WriteFile(backupPath, existing, 0o644) //nolint:errcheck
+	}
+
+	header := "# Burrow configuration — https://github.com/jcadam/burrow\n# Edit this file directly or use: gd configure\n\n"
 	return os.WriteFile(path, []byte(header+string(data)), 0o644)
 }
 
@@ -273,6 +299,32 @@ func Validate(cfg *Config) error {
 		for _, tool := range svc.Tools {
 			if tool.Path != "" && !strings.HasPrefix(tool.Path, "/") {
 				return fmt.Errorf("service %q tool %q has relative path %q (must start with /)", svc.Name, tool.Name, tool.Path)
+			}
+
+			// Validate param In fields and path placeholder consistency.
+			placeholders := extractPathPlaceholders(tool.Path)
+			pathParams := make(map[string]bool) // maps_to values of in:"path" params
+			for _, pc := range tool.Params {
+				switch pc.In {
+				case "", "query":
+					// valid
+				case "path":
+					pathParams[pc.MapsTo] = true
+					if !placeholders[pc.MapsTo] {
+						return fmt.Errorf("service %q tool %q param %q has in:path but path %q has no {%s} placeholder",
+							svc.Name, tool.Name, pc.Name, tool.Path, pc.MapsTo)
+					}
+				default:
+					return fmt.Errorf("service %q tool %q param %q has invalid in value %q (must be \"path\" or \"query\")",
+						svc.Name, tool.Name, pc.Name, pc.In)
+				}
+			}
+			// Check for orphan placeholders without a matching in:path param.
+			for ph := range placeholders {
+				if !pathParams[ph] {
+					return fmt.Errorf("service %q tool %q path has {%s} placeholder but no param with in:path and maps_to:%s",
+						svc.Name, tool.Name, ph, ph)
+				}
 			}
 		}
 	}

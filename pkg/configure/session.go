@@ -3,7 +3,6 @@ package configure
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -12,6 +11,11 @@ import (
 	"github.com/jcadam/burrow/pkg/profile"
 	"github.com/jcadam/burrow/pkg/synthesis"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	maxHistoryTurns      = 10
+	maxConversationBytes = 8_000
 )
 
 // Message represents a conversation turn.
@@ -121,6 +125,22 @@ Rules:
 - Valid LLM types: ollama, openrouter, llamacpp, passthrough
 - Valid privacy values: local, remote
 - All tool paths must start with /
+- Tool params support an "in" field: "path" or "query" (default: "query")
+- Path params use {maps_to} placeholders in the tool path, e.g. path: /users/{id} with a param that has maps_to: id, in: path
+- Path params are required at execution time — if a value is missing, the request fails
+- Example with path + query params:
+    tools:
+      - name: get_user_posts
+        method: GET
+        path: /users/{id}/posts
+        params:
+          - name: user_id
+            type: string
+            maps_to: id
+            in: path
+          - name: limit
+            type: string
+            maps_to: limit
 - Explain what you're changing before showing the YAML
 - If the user's request is unclear, ask for clarification
 - Never remove config the user didn't ask to change
@@ -132,7 +152,7 @@ API Spec Discovery:
   1. Present available API endpoints/capabilities to the user
   2. Let the user choose which endpoints to map as tools
   3. Generate tool entries with name, description, method, path, and params
-  4. Each param needs name (user-facing), type, and maps_to (actual API parameter name)
+  4. Each param needs name (user-facing), type, maps_to (actual API parameter name), and in ("path" or "query") if the param is part of the URL path
 - The user can always modify or override generated tool mappings`
 
 const specContextTemplate = `
@@ -153,6 +173,7 @@ Each tool needs: name, description, method, path, and params (with name, type, m
 // parse failures) that should be surfaced to the user.
 func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *Change, *ProfileChange, *RoutineChange, []string, error) {
 	s.history = append(s.history, Message{Role: "user", Content: userMsg})
+	s.trimHistory()
 
 	// Build the full conversation as a user prompt
 	var conversationBuilder strings.Builder
@@ -169,7 +190,7 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 		return "", nil, nil, nil, nil, fmt.Errorf("LLM error: %w", err)
 	}
 
-	s.history = append(s.history, Message{Role: "assistant", Content: response})
+	s.history = append(s.history, Message{Role: "assistant", Content: stripCodeBlocks(response)})
 
 	var warnings []string
 
@@ -229,6 +250,7 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 		if err := yaml.Unmarshal([]byte(yamlBlock), proposed); err != nil {
 			warnings = append(warnings, fmt.Sprintf("Failed to parse config YAML: %v", err))
 		} else {
+			protectFromFragmentWipe(s.cfg, proposed)
 			change = &Change{
 				Description: extractDescription(response, yamlBlock),
 				Config:      proposed,
@@ -238,6 +260,27 @@ func (s *Session) ProcessMessage(ctx context.Context, userMsg string) (string, *
 	}
 
 	return response, change, profChange, routineChange, warnings, nil
+}
+
+// trimHistory caps conversation history to prevent unbounded growth.
+// The system prompt already contains current config state, so old turns
+// about already-applied changes are redundant.
+func (s *Session) trimHistory() {
+	// Hard cap: keep at most maxHistoryTurns * 2 messages (user+assistant pairs).
+	if max := maxHistoryTurns * 2; len(s.history) > max {
+		s.history = s.history[len(s.history)-max:]
+	}
+	// Soft cap: drop oldest pairs until under byte budget.
+	for len(s.history) > 2 {
+		size := 0
+		for _, m := range s.history {
+			size += len(m.Role) + len(m.Content) + 6 // 6 for "[]: \n\n" framing
+		}
+		if size <= maxConversationBytes {
+			break
+		}
+		s.history = s.history[2:] // drop oldest user+assistant pair
+	}
 }
 
 // ApplyProfileChange saves a proposed profile change.
@@ -382,17 +425,36 @@ func (s *Session) ApplyChange(change *Change) error {
 		change.RemoteLLMWarning = true
 	}
 
-	// Best-effort backup before overwriting.
-	if current, err := yaml.Marshal(s.cfg); err == nil {
-		backupPath := filepath.Join(s.burrowDir, "config.yaml.bak")
-		os.WriteFile(backupPath, current, 0o644) //nolint:errcheck
-	}
-
 	if err := config.Save(s.burrowDir, change.Config); err != nil {
 		return fmt.Errorf("saving configuration: %w", err)
 	}
 	s.cfg = change.Config
 	return nil
+}
+
+// protectFromFragmentWipe restores config sections that the LLM accidentally
+// zeroed. When the LLM returns a partial YAML fragment with empty stubs
+// (e.g. `services: []`, `llm: {}`, `llm: {providers: []}`), Unmarshal
+// overwrites those sections. Since the system prompt tells the LLM to never
+// remove config the user didn't ask to change, empty sections in the fragment
+// are always accidental. This function restores the original values for
+// slice-based fields where "empty" is unambiguous (len == 0).
+//
+// Intentionally limited to slice fields (Services, LLM.Providers,
+// Privacy.Routes). Boolean/string fields (privacy flags, apps, rendering)
+// can't be reliably distinguished from intentional changes — the zero value
+// could be what the user asked for — and the worst case is a setting reset,
+// not data loss.
+func protectFromFragmentWipe(original, proposed *config.Config) {
+	if len(proposed.Services) == 0 && len(original.Services) > 0 {
+		proposed.Services = original.Services
+	}
+	if len(proposed.LLM.Providers) == 0 && len(original.LLM.Providers) > 0 {
+		proposed.LLM = original.LLM
+	}
+	if len(proposed.Privacy.Routes) == 0 && len(original.Privacy.Routes) > 0 {
+		proposed.Privacy.Routes = original.Privacy.Routes
+	}
 }
 
 // restoreCredentials copies credential values from src into dst for matching
@@ -478,6 +540,54 @@ func redactConfig(cfg *config.Config) *config.Config {
 		}
 	}
 	return c
+}
+
+// stripCodeBlocks removes yaml/yml fenced code blocks from text, replacing
+// each with a short placeholder. This keeps conversation history compact
+// since the system prompt already carries the authoritative config state.
+// Non-yaml code blocks (e.g. ```json) are left untouched.
+func stripCodeBlocks(text string) string {
+	lines := strings.Split(text, "\n")
+	var result strings.Builder
+	inBlock := false
+	var placeholder string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock {
+			lower := strings.ToLower(trimmed)
+			switch {
+			case strings.HasPrefix(lower, "```yaml routine ") || strings.HasPrefix(lower, "```yml routine "):
+				inBlock = true
+				placeholder = "[proposed routine change]"
+			case lower == "```yaml profile" || lower == "```yml profile":
+				inBlock = true
+				placeholder = "[proposed profile change]"
+			case lower == "```yaml" || lower == "```yml":
+				inBlock = true
+				placeholder = "[proposed config change]"
+			default:
+				result.WriteString(line)
+				result.WriteByte('\n')
+			}
+		} else {
+			if trimmed == "```" {
+				inBlock = false
+				result.WriteString(placeholder)
+				result.WriteByte('\n')
+			}
+			// Skip lines inside the block.
+		}
+	}
+
+	// If the block was never closed, the original lines were already
+	// consumed. Append nothing — match the extract* behavior of ignoring
+	// unclosed blocks. Re-emit the original text in that case.
+	if inBlock {
+		return text
+	}
+
+	return strings.TrimRight(result.String(), "\n")
 }
 
 // extractYAMLBlock finds the first ```yaml ... ``` block in text (not ```yaml profile).

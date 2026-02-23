@@ -598,6 +598,269 @@ func TestExecuteWithExpandFunc(t *testing.T) {
 	}
 }
 
+func TestExecutePathParam(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/42" {
+			t.Errorf("expected path /users/42, got %q", r.URL.Path)
+		}
+		w.Write([]byte(`{"id": 42}`))
+	})
+	defer srv.Close()
+
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "path-param-test",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "get_user",
+				Method: "GET",
+				Path:   "/users/{id}",
+				Params: []config.ParamConfig{
+					{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+				},
+			},
+		},
+	}, nil, "")
+
+	result, err := svc.Execute(context.Background(), "get_user", map[string]string{
+		"user_id": "42",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
+func TestExecutePathParamMixed(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/42/posts" {
+			t.Errorf("expected path /users/42/posts, got %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("limit"); got != "10" {
+			t.Errorf("expected limit=10, got %q", got)
+		}
+		w.Write([]byte(`[]`))
+	})
+	defer srv.Close()
+
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "mixed-test",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "get_user_posts",
+				Method: "GET",
+				Path:   "/users/{id}/posts",
+				Params: []config.ParamConfig{
+					{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+					{Name: "limit", Type: "string", MapsTo: "limit"},
+				},
+			},
+		},
+	}, nil, "")
+
+	result, err := svc.Execute(context.Background(), "get_user_posts", map[string]string{
+		"user_id": "42",
+		"limit":   "10",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
+func TestExecuteMultiplePathParams(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/acme/repos/burrow/issues" {
+			t.Errorf("expected path /orgs/acme/repos/burrow/issues, got %q", r.URL.Path)
+		}
+		w.Write([]byte(`[]`))
+	})
+	defer srv.Close()
+
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "multi-path-test",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "list_issues",
+				Method: "GET",
+				Path:   "/orgs/{org}/repos/{repo}/issues",
+				Params: []config.ParamConfig{
+					{Name: "organization", Type: "string", MapsTo: "org", In: "path"},
+					{Name: "repository", Type: "string", MapsTo: "repo", In: "path"},
+				},
+			},
+		},
+	}, nil, "")
+
+	result, err := svc.Execute(context.Background(), "list_issues", map[string]string{
+		"organization": "acme",
+		"repository":   "burrow",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
+func TestExecutePathParamMissing(t *testing.T) {
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "missing-path-test",
+		Type:     "rest",
+		Endpoint: "http://localhost",
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "get_user",
+				Method: "GET",
+				Path:   "/users/{id}",
+				Params: []config.ParamConfig{
+					{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+				},
+			},
+		},
+	}, nil, "")
+
+	_, err := svc.Execute(context.Background(), "get_user", map[string]string{})
+	if err == nil {
+		t.Fatal("expected error for missing path param")
+	}
+	if !strings.Contains(err.Error(), "missing required path parameter") {
+		t.Errorf("expected missing path param error, got: %v", err)
+	}
+}
+
+func TestExecutePathParamURLEncoding(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		// url.PathEscape encodes spaces as %20 and slashes as %2F
+		if r.URL.RawPath != "/users/hello%20world%2Ffoo" && r.URL.Path != "/users/hello world/foo" {
+			t.Errorf("expected encoded path, got Path=%q RawPath=%q", r.URL.Path, r.URL.RawPath)
+		}
+		w.Write([]byte(`{}`))
+	})
+	defer srv.Close()
+
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "encode-test",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "get_user",
+				Method: "GET",
+				Path:   "/users/{id}",
+				Params: []config.ParamConfig{
+					{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+				},
+			},
+		},
+	}, nil, "")
+
+	result, err := svc.Execute(context.Background(), "get_user", map[string]string{
+		"user_id": "hello world/foo",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
+func TestExecutePathParamBackwardCompat(t *testing.T) {
+	// No In field — all params should be query params as before.
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("id"); got != "42" {
+			t.Errorf("expected query id=42, got %q", got)
+		}
+		w.Write([]byte(`{}`))
+	})
+	defer srv.Close()
+
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "compat-test",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "get_user",
+				Method: "GET",
+				Path:   "/users",
+				Params: []config.ParamConfig{
+					{Name: "user_id", Type: "string", MapsTo: "id"},
+				},
+			},
+		},
+	}, nil, "")
+
+	result, err := svc.Execute(context.Background(), "get_user", map[string]string{
+		"user_id": "42",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
+func TestExecutePathParamWithExpandFunc(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		// expandFunc resolves {{profile "org"}} to "acme", then path param replaces {id}
+		if r.URL.Path != "/orgs/acme/users/42" {
+			t.Errorf("expected path /orgs/acme/users/42, got %q", r.URL.Path)
+		}
+		w.Write([]byte(`{}`))
+	})
+	defer srv.Close()
+
+	svc := NewRESTService(config.ServiceConfig{
+		Name:     "expand-path-test",
+		Type:     "rest",
+		Endpoint: srv.URL,
+		Auth:     config.AuthConfig{Method: "none"},
+		Tools: []config.ToolConfig{
+			{
+				Name:   "get_user",
+				Method: "GET",
+				Path:   `/orgs/ORGNAME/users/{id}`,
+				Params: []config.ParamConfig{
+					{Name: "user_id", Type: "string", MapsTo: "id", In: "path"},
+				},
+			},
+		},
+	}, nil, "")
+
+	svc.SetExpandFunc(func(s string) (string, error) {
+		return strings.ReplaceAll(s, "ORGNAME", "acme"), nil
+	})
+
+	result, err := svc.Execute(context.Background(), "get_user", map[string]string{
+		"user_id": "42",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("result error: %s", result.Error)
+	}
+}
+
 func TestProxyURLSetOnTransport(t *testing.T) {
 	svc := NewRESTService(config.ServiceConfig{
 		Name:     "proxy-test",
