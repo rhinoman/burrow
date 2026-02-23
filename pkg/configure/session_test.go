@@ -1453,6 +1453,21 @@ func TestProcessMessageFragmentDoesNotWipeConfig(t *testing.T) {
 	}
 }
 
+func TestSystemPromptContainsKeyParamGuidance(t *testing.T) {
+	provider := &capturingProvider{response: "Got it."}
+	cfg := &config.Config{}
+	session := NewSession(t.TempDir(), cfg, provider)
+
+	session.ProcessMessage(context.Background(), "help me configure a service") //nolint:errcheck
+
+	if !strings.Contains(provider.systemPrompt, "key_param") {
+		t.Error("expected system prompt to contain key_param guidance")
+	}
+	if !strings.Contains(provider.systemPrompt, "api_key_header") {
+		t.Error("expected system prompt to mention api_key_header in key_param context")
+	}
+}
+
 func TestExtractRoutineYAMLBlockCaseInsensitive(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -516,6 +516,30 @@ func TestLLMSynthesizerRepairsBrokenURLs(t *testing.T) {
 	}
 }
 
+func TestLLMSynthesizerIncompleteDataInstruction(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if !strings.Contains(provider.lastUser, "missing or incomplete fields") {
+		t.Error("expected incomplete-data instruction in user prompt")
+	}
+	if !strings.Contains(provider.lastUser, "analyze what IS present") {
+		t.Error("expected analyze-available-data instruction in user prompt")
+	}
+	if !strings.Contains(provider.lastUser, `Never skip a section or declare "none included"`) {
+		t.Error("expected never-skip instruction in user prompt")
+	}
+}
+
 func TestLLMSynthesizerPreserveAttribution(t *testing.T) {
 	provider := &fakeProvider{}
 	synth := NewLLMSynthesizer(provider, false)

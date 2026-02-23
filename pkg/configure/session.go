@@ -122,6 +122,7 @@ Rules:
 - Valid service types: rest, mcp, rss
 - RSS services use type: rss with the feed URL as endpoint. No tools config needed — they auto-provide a 'feed' tool. Optional: max_items (default 20)
 - Valid auth methods: api_key, api_key_header, bearer, user_agent, none
+- For api_key and api_key_header auth: use key_param to set the actual query parameter or header name if the API doesn't use the default ("api_key" for api_key, "X-API-Key" for api_key_header). Example: Alpha Vantage uses key_param: apikey
 - Valid LLM types: ollama, openrouter, llamacpp, passthrough
 - Valid privacy values: local, remote
 - All tool paths must start with /

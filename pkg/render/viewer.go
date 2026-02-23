@@ -536,7 +536,10 @@ func RunViewer(title string, markdown string, opts ...ViewerOption) error {
 	v = built
 
 	// Production-only: charts, zones, mouse
-	v.content = processCharts(v.raw, v.content, v.reportDir, v.imageTier)
+	// Use TierNone for charts in the viewport — Kitty/iTerm floating images
+	// don't scroll with BubbleTea's line-based viewport. Text tables scroll
+	// correctly; press 'i' to open the full PNG in an external viewer.
+	v.content = processCharts(v.raw, v.content, v.reportDir, TierNone)
 	v.hasCharts = hasChartDirectives(v.raw)
 
 	// Refresh fullLines and headings after chart processing

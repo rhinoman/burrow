@@ -147,6 +147,11 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 	userPrompt.WriteString("Every news item, paper, or article with a URL must have a clickable link in the report. ")
 	userPrompt.WriteString("Never break a URL across lines.\n")
 
+	userPrompt.WriteString("\n---\n")
+	userPrompt.WriteString("When source data has missing or incomplete fields, always analyze what IS present. ")
+	userPrompt.WriteString("Never skip a section or declare \"none included\" because some records lack a field. ")
+	userPrompt.WriteString("Present the available data, note any limitations briefly in parentheses, and move on.\n")
+
 	userPrompt.WriteString("\n---\nRemember: static document only. No conversational closing.\n")
 
 	result, err := l.provider.Complete(ctx, fullSystem, userPrompt.String())
