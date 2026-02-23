@@ -95,6 +95,17 @@ func NewLLMSynthesizer(provider Provider, stripAttribution bool) *LLMSynthesizer
 
 // Synthesize sends collected results through the LLM for synthesis.
 func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPrompt string, results []*services.Result) (string, error) {
+	// Append static-document instruction to system prompt so it takes
+	// precedence over the LLM's conversational training.
+	fullSystem := systemPrompt
+	if fullSystem != "" {
+		fullSystem += "\n\n"
+	}
+	fullSystem += "Output format: This is a static report document, not a conversation. " +
+		"Never include greetings, sign-offs, offers to help, or closing phrases like " +
+		"\"Let me know if you have questions\" or \"Reply to refine.\" " +
+		"End the report with the final section's content."
+
 	var userPrompt strings.Builder
 	userPrompt.WriteString("Generate a report titled: ")
 	userPrompt.WriteString(title)
@@ -129,12 +140,13 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 	}
 
 	userPrompt.WriteString("\n---\n")
-	userPrompt.WriteString("Important: This is a static report document, not a conversation. ")
-	userPrompt.WriteString("Do not include conversational elements such as greetings, sign-offs, ")
-	userPrompt.WriteString("offers to help, or phrases like \"Let me know if you have questions\" ")
-	userPrompt.WriteString("or \"Reply to refine.\" End the report with the final section's content.\n")
+	userPrompt.WriteString("When source data contains URLs or link fields, always include them ")
+	userPrompt.WriteString("in the report as markdown links — e.g., [Title](https://example.com). ")
+	userPrompt.WriteString("Every news item, paper, or article with a URL must have a clickable link in the report.\n")
 
-	return l.provider.Complete(ctx, systemPrompt, userPrompt.String())
+	userPrompt.WriteString("\n---\nRemember: static document only. No conversational closing.\n")
+
+	return l.provider.Complete(ctx, fullSystem, userPrompt.String())
 }
 
 // stripServiceNames replaces any service name found in text with a generic placeholder.

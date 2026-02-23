@@ -266,11 +266,37 @@ func TestLLMSynthesizerStaticDocumentInstruction(t *testing.T) {
 		t.Fatalf("Synthesize: %v", err)
 	}
 
-	if !strings.Contains(provider.lastUser, "static report document") {
-		t.Error("expected static-document instruction in user prompt")
+	// Primary instruction must be in system prompt for authority over LLM training
+	if !strings.Contains(provider.lastSystem, "static report document") {
+		t.Error("expected static-document instruction in system prompt")
 	}
-	if !strings.Contains(provider.lastUser, "Reply to refine") {
-		t.Error("expected explicit prohibition of conversational closing")
+	if !strings.Contains(provider.lastSystem, "Reply to refine") {
+		t.Error("expected explicit prohibition of conversational closing in system prompt")
+	}
+	// Short reinforcement in user prompt
+	if !strings.Contains(provider.lastUser, "static document only") {
+		t.Error("expected short reinforcement in user prompt")
+	}
+}
+
+func TestLLMSynthesizerLinkInstruction(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+
+	results := []*services.Result{
+		{Service: "rss-feed", Tool: "fetch", Data: []byte(`{"title":"Article","link":"https://example.com"}`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if !strings.Contains(provider.lastUser, "markdown links") {
+		t.Error("expected link-preservation instruction in user prompt")
+	}
+	if !strings.Contains(provider.lastUser, "clickable link") {
+		t.Error("expected clickable link requirement in user prompt")
 	}
 }
 
