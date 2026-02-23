@@ -68,6 +68,36 @@ func TestLoadRoutine(t *testing.T) {
 	if r.Sources[0].Params["naics"] != "541370" {
 		t.Errorf("expected naics 541370, got %q", r.Sources[0].Params["naics"])
 	}
+	if r.Report.GenerateCharts == nil || *r.Report.GenerateCharts != true {
+		t.Errorf("expected generate_charts to be parsed as *true, got %v", r.Report.GenerateCharts)
+	}
+}
+
+func TestChartsEnabledDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "no-charts-field.yaml")
+	content := `
+report:
+  title: "Test"
+sources:
+  - service: test
+    tool: fetch
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := LoadRoutine(path)
+	if err != nil {
+		t.Fatalf("LoadRoutine: %v", err)
+	}
+
+	if r.Report.GenerateCharts != nil {
+		t.Errorf("expected GenerateCharts to be nil when omitted, got %v", *r.Report.GenerateCharts)
+	}
+	if !r.Report.ChartsEnabled() {
+		t.Error("expected ChartsEnabled() to return true when GenerateCharts is nil")
+	}
 }
 
 func TestLoadRoutineMissingTitle(t *testing.T) {

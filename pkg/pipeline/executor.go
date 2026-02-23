@@ -182,6 +182,11 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 		// If prevReport is nil (no previous report exists), skip silently — first run.
 	}
 
+	// Inject chart generation instructions if enabled (spec §4.5).
+	if routine.Report.ChartsEnabled() {
+		synthesisSystem = synthesisSystem + "\n\n" + chartInstructions
+	}
+
 	// Synthesize
 	markdown, err := e.synthesizer.Synthesize(ctx, reportTitle, synthesisSystem, results)
 	if err != nil {
@@ -189,7 +194,7 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 	}
 
 	// Generate chart PNGs if enabled
-	if routine.Report.GenerateCharts {
+	if routine.Report.ChartsEnabled() {
 		directives := charts.ParseDirectives(markdown)
 		if len(directives) > 0 {
 			chartsDir := filepath.Join(reportDir, "charts")
@@ -325,6 +330,18 @@ func (e *Executor) indexContext(routine *Routine, report *reports.Report, result
 		}
 	}
 }
+
+const chartInstructions = `Data visualization: When source data contains numerical comparisons, trends over time, ` +
+	`or proportional breakdowns, include chart directives in fenced code blocks. Format:` + "\n\n" +
+	"```chart\n" +
+	"type: bar\n" +
+	`title: "Descriptive Title"` + "\n" +
+	`x: ["Label1", "Label2", "Label3"]` + "\n" +
+	`y: [10, 20, 30]` + "\n" +
+	"```\n\n" +
+	`Supported types: bar (comparisons), line (trends over time), pie (proportional breakdowns). ` +
+	`Use "labels" and "values" as alternative keys for pie charts. ` +
+	`Only include charts when the data clearly supports visualization — do not force charts on qualitative summaries.`
 
 const maxCompareRunes = 50_000
 

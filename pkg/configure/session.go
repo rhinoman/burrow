@@ -108,7 +108,7 @@ Rules:
 - Sources reference services from config.yaml by name
 - When updating an existing routine, output the COMPLETE routine with ALL fields — omitted fields will be reset to defaults
 - Never remove routine fields the user didn't ask to change
-- Available routine fields: schedule (cron), timezone, jitter (seconds), llm (provider name), report (title, style, generate_charts, max_length, compare_with), synthesis.system (system prompt for LLM), sources (list of service, tool, params, context_label)
+- Available routine fields: schedule (cron), timezone, jitter (seconds), llm (provider name), report (title, style, generate_charts (default: true), max_length, compare_with), synthesis.system (system prompt for LLM), sources (list of service, tool, params, context_label)
 - Source params must be key-value string pairs, e.g. params: {q: "search term", limit: "10"} — values are always plain strings, never arrays or nested objects
 - Example routine source:
     sources:

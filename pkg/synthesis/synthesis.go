@@ -4,6 +4,7 @@ package synthesis
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -140,13 +141,110 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 	}
 
 	userPrompt.WriteString("\n---\n")
-	userPrompt.WriteString("When source data contains URLs or link fields, always include them ")
-	userPrompt.WriteString("in the report as markdown links — e.g., [Title](https://example.com). ")
-	userPrompt.WriteString("Every news item, paper, or article with a URL must have a clickable link in the report.\n")
+	userPrompt.WriteString("When source data contains URLs or link fields (\"link\", \"url\", \"href\"), ")
+	userPrompt.WriteString("use the exact URL from the data as-is — do not construct, guess, or modify URLs. ")
+	userPrompt.WriteString("Format them as markdown links: [Title](https://example.com). ")
+	userPrompt.WriteString("Every news item, paper, or article with a URL must have a clickable link in the report. ")
+	userPrompt.WriteString("Never break a URL across lines.\n")
 
 	userPrompt.WriteString("\n---\nRemember: static document only. No conversational closing.\n")
 
-	return l.provider.Complete(ctx, fullSystem, userPrompt.String())
+	result, err := l.provider.Complete(ctx, fullSystem, userPrompt.String())
+	if err != nil {
+		return "", err
+	}
+	return trimConversationalClosing(repairBrokenURLs(result)), nil
+}
+
+// brokenURLPattern matches markdown link URLs that contain newlines: ](url\nrest)
+var brokenURLPattern = regexp.MustCompile(`\]\(([^)]*\n[^)]*)\)`)
+
+// repairBrokenURLs fixes markdown links where the URL was wrapped across lines
+// by the LLM. It strips all whitespace characters from inside ](...) when a
+// newline is present. Only targets markdown links — bare URLs are left alone.
+func repairBrokenURLs(text string) string {
+	return brokenURLPattern.ReplaceAllStringFunc(text, func(match string) string {
+		inner := match[2 : len(match)-1] // strip "](" and ")"
+		var cleaned strings.Builder
+		for _, r := range inner {
+			if r != '\n' && r != '\r' && r != ' ' && r != '\t' {
+				cleaned.WriteRune(r)
+			}
+		}
+		return "](" + cleaned.String() + ")"
+	})
+}
+
+// conversationalClosings are substring patterns matched (case-insensitive) against
+// trailing lines of LLM output to strip chatbot-style sign-offs from reports.
+var conversationalClosings = []string{
+	"let me know",
+	"feel free to",
+	"don't hesitate",
+	"do not hesitate",
+	"happy to help",
+	"hope this helps",
+	"if you need anything",
+	"if you have any questions",
+	"if you have questions",
+	"reply to refine",
+	"questions? reply",
+	"reach out if",
+	"glad to help",
+	"here to help",
+	"want me to",
+	"shall i",
+	"i can also",
+	"i'd be happy",
+	"i would be happy",
+}
+
+// trimConversationalClosing removes chatbot-style closing lines from the end of
+// LLM output. It walks backwards from the last non-empty line (up to 5 non-empty
+// lines) and strips lines that match known conversational patterns, as well as
+// trailing separators (---) and blank lines. Lines starting with > or ` are treated
+// as real content and stop the scan.
+func trimConversationalClosing(text string) string {
+	trimmed := strings.TrimRight(text, " \t\n\r")
+	if trimmed == "" {
+		return ""
+	}
+	lines := strings.Split(trimmed, "\n")
+
+	cutIndex := len(lines) // index of first line to remove
+	scanned := 0           // count of non-empty lines examined
+
+	for i := len(lines) - 1; i >= 0 && scanned < 5; i-- {
+		line := strings.TrimSpace(lines[i])
+
+		// Empty lines and horizontal rules between closings get removed too.
+		if line == "" || line == "---" {
+			cutIndex = i
+			continue
+		}
+
+		// Blockquotes and code fences are real content — stop.
+		if strings.HasPrefix(line, ">") || strings.HasPrefix(line, "`") {
+			break
+		}
+
+		scanned++
+		lower := strings.ToLower(line)
+		matched := false
+		for _, pat := range conversationalClosings {
+			if strings.Contains(lower, pat) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			break
+		}
+		cutIndex = i
+	}
+
+	result := strings.Join(lines[:cutIndex], "\n")
+	return strings.TrimRight(result, " \t\n\r") + "\n"
 }
 
 // stripServiceNames replaces any service name found in text with a generic placeholder.

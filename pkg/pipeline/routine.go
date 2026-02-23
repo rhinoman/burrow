@@ -27,9 +27,15 @@ type Routine struct {
 type ReportConfig struct {
 	Title          string `yaml:"title"`
 	Style          string `yaml:"style,omitempty"`
-	GenerateCharts bool   `yaml:"generate_charts,omitempty"`
+	GenerateCharts *bool  `yaml:"generate_charts,omitempty"`
 	MaxLength      int    `yaml:"max_length,omitempty"`
 	CompareWith    string `yaml:"compare_with,omitempty"` // Routine name to compare with for longitudinal analysis
+}
+
+// ChartsEnabled returns whether chart generation is enabled.
+// Charts are enabled by default (nil = true). Only an explicit false disables them.
+func (rc ReportConfig) ChartsEnabled() bool {
+	return rc.GenerateCharts == nil || *rc.GenerateCharts
 }
 
 // SynthesisConfig holds the LLM system prompt for synthesis.

@@ -17,7 +17,7 @@ llm: local/llama3:latest
 report:
   title: "Daily Brief — {{profile.name}}"
   # style: executive_summary
-  # generate_charts: true
+  # generate_charts: true  # default; set false to disable
   # max_length: 5000
 
 # Synthesis prompt — sent to the LLM as a system prompt when llm is not "none".

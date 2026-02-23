@@ -544,8 +544,9 @@ func TestExecutorCompareWithNoPrevious(t *testing.T) {
 	routine := &Routine{
 		Name: "first-run",
 		Report: ReportConfig{
-			Title:       "First Report",
-			CompareWith: "nonexistent-routine",
+			Title:          "First Report",
+			CompareWith:    "nonexistent-routine",
+			GenerateCharts: boolPtr(false),
 		},
 		Synthesis: SynthesisConfig{System: "You are an analyst."},
 		Sources: []SourceConfig{
@@ -581,7 +582,7 @@ func TestExecutorNoCompareWith(t *testing.T) {
 
 	routine := &Routine{
 		Name:      "no-compare",
-		Report:    ReportConfig{Title: "Normal Report"},
+		Report:    ReportConfig{Title: "Normal Report", GenerateCharts: boolPtr(false)},
 		Synthesis: SynthesisConfig{System: "You are an analyst."},
 		Sources: []SourceConfig{
 			{Service: "test-api", Tool: "fetch"},
@@ -598,6 +599,8 @@ func TestExecutorNoCompareWith(t *testing.T) {
 		t.Errorf("expected unmodified system prompt, got %q", synth.systemPrompt)
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 // chartSynthesizer returns markdown with chart directives.
 type chartSynthesizer struct {
@@ -625,7 +628,7 @@ func TestExecutorChartGeneration(t *testing.T) {
 		Name: "chart-test",
 		Report: ReportConfig{
 			Title:          "Chart Report",
-			GenerateCharts: true,
+			GenerateCharts: boolPtr(true),
 		},
 		Sources: []SourceConfig{
 			{Service: "test-api", Tool: "fetch"},
@@ -687,7 +690,7 @@ func TestExecutorChartGenerationDisabled(t *testing.T) {
 		Name: "no-charts",
 		Report: ReportConfig{
 			Title:          "No Charts",
-			GenerateCharts: false,
+			GenerateCharts: boolPtr(false),
 		},
 		Sources: []SourceConfig{
 			{Service: "test-api", Tool: "fetch"},
@@ -706,6 +709,130 @@ func TestExecutorChartGenerationDisabled(t *testing.T) {
 	}
 	if len(report.Charts) != 0 {
 		t.Errorf("expected 0 charts, got %d", len(report.Charts))
+	}
+}
+
+func TestExecutorChartInstructionsInjected(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "value"}`)})
+
+	synth := &capturingSynthesizer{}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "chart-instructions",
+		Report: ReportConfig{
+			Title:          "Chart Instructions Test",
+			GenerateCharts: boolPtr(true),
+		},
+		Synthesis: SynthesisConfig{System: "You are an analyst."},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	_, err := exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// System prompt should contain chart instructions.
+	if !strings.Contains(synth.systemPrompt, "Data visualization:") {
+		t.Error("expected chart instructions in system prompt")
+	}
+	if !strings.Contains(synth.systemPrompt, "```chart") {
+		t.Error("expected chart directive example in system prompt")
+	}
+	if !strings.Contains(synth.systemPrompt, "bar") || !strings.Contains(synth.systemPrompt, "line") || !strings.Contains(synth.systemPrompt, "pie") {
+		t.Error("expected all chart types mentioned in system prompt")
+	}
+	// Original system prompt should still be present.
+	if !strings.Contains(synth.systemPrompt, "You are an analyst.") {
+		t.Error("expected original system prompt preserved")
+	}
+}
+
+func TestExecutorChartDefaultEnabled(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "value"}`)})
+
+	chartMD := "# Report\n\n```chart\ntype: bar\ntitle: \"Default Charts\"\nx: [\"A\", \"B\"]\ny: [10, 20]\n```\n\nText.\n"
+
+	synth := &chartSynthesizer{markdown: chartMD}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "default-charts",
+		Report: ReportConfig{
+			Title: "Default Charts Report",
+			// GenerateCharts omitted (nil) — should default to enabled
+		},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	report, err := exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Charts directory should be created with a PNG (charts enabled by default)
+	chartsDir := filepath.Join(report.Dir, "charts")
+	entries, err := os.ReadDir(chartsDir)
+	if err != nil {
+		t.Fatalf("ReadDir charts: %v (expected charts dir to exist when GenerateCharts is nil)", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 chart file, got %d", len(entries))
+	}
+	if !strings.HasSuffix(entries[0].Name(), ".png") {
+		t.Errorf("expected .png file, got %q", entries[0].Name())
+	}
+}
+
+func TestExecutorChartInstructionsNotInjectedWhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	reportsDir := filepath.Join(dir, "reports")
+	os.MkdirAll(reportsDir, 0o755)
+
+	reg := services.NewRegistry()
+	reg.Register(&mockService{name: "test-api", response: []byte(`{"data": "value"}`)})
+
+	synth := &capturingSynthesizer{}
+	exec := NewExecutor(reg, synth, reportsDir)
+
+	routine := &Routine{
+		Name: "no-chart-instructions",
+		Report: ReportConfig{
+			Title:          "No Chart Instructions",
+			GenerateCharts: boolPtr(false),
+		},
+		Synthesis: SynthesisConfig{System: "You are an analyst."},
+		Sources: []SourceConfig{
+			{Service: "test-api", Tool: "fetch"},
+		},
+	}
+
+	_, err := exec.Run(context.Background(), routine)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// System prompt should NOT contain chart instructions.
+	if strings.Contains(synth.systemPrompt, "Data visualization:") {
+		t.Error("did not expect chart instructions when GenerateCharts is false")
+	}
+	if synth.systemPrompt != "You are an analyst." {
+		t.Errorf("expected unmodified system prompt, got %q", synth.systemPrompt)
 	}
 }
 

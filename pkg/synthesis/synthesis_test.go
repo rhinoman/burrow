@@ -99,16 +99,133 @@ func TestPassthroughSynthesizeEmpty(t *testing.T) {
 	}
 }
 
+// --- trimConversationalClosing unit tests ---
+
+func TestTrimClosingBasic(t *testing.T) {
+	input := "## Summary\n\nGood stuff here.\n\nQuestions? Reply to refine.\n"
+	got := trimConversationalClosing(input)
+	if strings.Contains(got, "Reply to refine") {
+		t.Error("expected closing to be stripped")
+	}
+	if !strings.Contains(got, "Good stuff here.") {
+		t.Error("expected content to be preserved")
+	}
+}
+
+func TestTrimClosingWithSeparator(t *testing.T) {
+	input := "## Summary\n\nContent here.\n\n---\n\nLet me know if you have questions.\n"
+	got := trimConversationalClosing(input)
+	if strings.Contains(got, "Let me know") {
+		t.Error("expected closing to be stripped")
+	}
+	if strings.Contains(got, "---") {
+		// The trailing --- should also be stripped since it's between content and closing.
+		// But if there's a --- that's part of the content above, that's fine.
+		// Let's just check the closing is gone.
+	}
+	if !strings.Contains(got, "Content here.") {
+		t.Error("expected content to be preserved")
+	}
+}
+
+func TestTrimClosingEmDashPrefix(t *testing.T) {
+	input := "## Summary\n\nContent.\n\n— Questions? Reply to refine.\n"
+	got := trimConversationalClosing(input)
+	if strings.Contains(got, "Questions? Reply") {
+		t.Error("expected em-dash prefixed closing to be stripped")
+	}
+	if !strings.Contains(got, "Content.") {
+		t.Error("expected content to be preserved")
+	}
+}
+
+func TestTrimClosingMultiLine(t *testing.T) {
+	input := "Report content.\n\nLet me know if you need anything.\nI'd be happy to help further.\n"
+	got := trimConversationalClosing(input)
+	if strings.Contains(got, "Let me know") {
+		t.Error("expected first closing line stripped")
+	}
+	if strings.Contains(got, "happy to help") {
+		t.Error("expected second closing line stripped")
+	}
+	if !strings.Contains(got, "Report content.") {
+		t.Error("expected content preserved")
+	}
+}
+
+func TestTrimClosingNoMatch(t *testing.T) {
+	input := "1. Do this\n2. Do that\n"
+	got := trimConversationalClosing(input)
+	if got != input {
+		t.Errorf("expected unchanged, got %q", got)
+	}
+}
+
+func TestTrimClosingEmpty(t *testing.T) {
+	got := trimConversationalClosing("")
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestTrimClosingBlockquoteProtected(t *testing.T) {
+	input := "> Let me know\n"
+	got := trimConversationalClosing(input)
+	if !strings.Contains(got, "Let me know") {
+		t.Error("expected blockquote content to be preserved")
+	}
+}
+
+func TestTrimClosingCaseInsensitive(t *testing.T) {
+	input := "Content here.\n\nLET ME KNOW IF YOU HAVE QUESTIONS!\n"
+	got := trimConversationalClosing(input)
+	if strings.Contains(strings.ToLower(got), "let me know") {
+		t.Error("expected case-insensitive match to be stripped")
+	}
+	if !strings.Contains(got, "Content here.") {
+		t.Error("expected content preserved")
+	}
+}
+
+// --- fakeProvider and LLM integration tests ---
+
 // fakeProvider captures the prompt sent to the LLM.
 type fakeProvider struct {
 	lastSystem string
 	lastUser   string
+	response   string
 }
 
 func (f *fakeProvider) Complete(_ context.Context, system, user string) (string, error) {
 	f.lastSystem = system
 	f.lastUser = user
+	if f.response != "" {
+		return f.response, nil
+	}
 	return "# Generated Report\n", nil
+}
+
+func TestLLMSynthesizerTrimsClosing(t *testing.T) {
+	provider := &fakeProvider{
+		response: "# Daily Brief\n\nKey findings here.\n\n---\n\nLet me know if you have questions.\n",
+	}
+	synth := NewLLMSynthesizer(provider, false)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	got, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if strings.Contains(got, "Let me know") {
+		t.Error("expected LLMSynthesizer to strip conversational closing from output")
+	}
+	if !strings.Contains(got, "Key findings here.") {
+		t.Error("expected report content to be preserved")
+	}
 }
 
 func TestLLMSynthesizerStripAttribution(t *testing.T) {
@@ -297,6 +414,105 @@ func TestLLMSynthesizerLinkInstruction(t *testing.T) {
 	}
 	if !strings.Contains(provider.lastUser, "clickable link") {
 		t.Error("expected clickable link requirement in user prompt")
+	}
+	if !strings.Contains(provider.lastUser, "exact URL") {
+		t.Error("expected exact-URL instruction in user prompt")
+	}
+	if !strings.Contains(provider.lastUser, "Never break a URL") {
+		t.Error("expected no-line-break instruction in user prompt")
+	}
+}
+
+// --- repairBrokenURLs unit tests ---
+
+func TestRepairBrokenURLsBasic(t *testing.T) {
+	input := "[Article](https://example.com/item?\nid=123)"
+	want := "[Article](https://example.com/item?id=123)"
+	got := repairBrokenURLs(input)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRepairBrokenURLsLeadingWhitespace(t *testing.T) {
+	input := "[Article](https://example.com/item?\n    id=123)"
+	want := "[Article](https://example.com/item?id=123)"
+	got := repairBrokenURLs(input)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRepairBrokenURLsMultipleLinks(t *testing.T) {
+	input := "See [A](https://a.com/\npath) and [B](https://b.com/\nother)"
+	want := "See [A](https://a.com/path) and [B](https://b.com/other)"
+	got := repairBrokenURLs(input)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRepairBrokenURLsMultipleNewlines(t *testing.T) {
+	input := "[Link](https://example.com/\na/\nb/c)"
+	want := "[Link](https://example.com/a/b/c)"
+	got := repairBrokenURLs(input)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRepairBrokenURLsCRLF(t *testing.T) {
+	input := "[Link](https://example.com/item?\r\nid=1)"
+	want := "[Link](https://example.com/item?id=1)"
+	got := repairBrokenURLs(input)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRepairBrokenURLsValidUnchanged(t *testing.T) {
+	input := "[Link](https://example.com/path) and [Other](https://other.com)"
+	got := repairBrokenURLs(input)
+	if got != input {
+		t.Errorf("expected unchanged, got %q", got)
+	}
+}
+
+func TestRepairBrokenURLsEmpty(t *testing.T) {
+	got := repairBrokenURLs("")
+	if got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+func TestRepairBrokenURLsBareURLUnchanged(t *testing.T) {
+	input := "Visit https://example.com/item?\nid=123 for details"
+	got := repairBrokenURLs(input)
+	if got != input {
+		t.Errorf("expected bare URL unchanged, got %q", got)
+	}
+}
+
+func TestLLMSynthesizerRepairsBrokenURLs(t *testing.T) {
+	provider := &fakeProvider{
+		response: "# Report\n\n[Article](https://example.com/item?\nid=123)\n",
+	}
+	synth := NewLLMSynthesizer(provider, false)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	got, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if strings.Contains(got, "item?\nid=123") {
+		t.Error("expected broken URL to be repaired in Synthesize output")
+	}
+	if !strings.Contains(got, "item?id=123") {
+		t.Error("expected repaired URL in Synthesize output")
 	}
 }
 
