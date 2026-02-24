@@ -47,6 +47,7 @@ func NewOpenRouterProviderWithTimeout(endpoint, apiKey, model string, timeoutSec
 type openAIRequest struct {
 	Model    string          `json:"model"`
 	Messages []openAIMessage `json:"messages"`
+	Stream   bool            `json:"stream"`
 }
 
 type openAIMessage struct {
