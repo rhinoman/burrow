@@ -40,7 +40,10 @@ func NewOpenRouterProviderWithTimeout(endpoint, apiKey, model string, timeoutSec
 		endpoint: endpoint,
 		apiKey:   apiKey,
 		model:    model,
-		client:   &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{},
+		},
 	}
 }
 

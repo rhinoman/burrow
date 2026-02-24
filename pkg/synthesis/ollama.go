@@ -38,7 +38,10 @@ func NewOllamaProviderWithTimeout(endpoint, model string, timeoutSecs int) *Olla
 	return &OllamaProvider{
 		endpoint: endpoint,
 		model:    model,
-		client:   &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{},
+		},
 	}
 }
 
