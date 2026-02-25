@@ -28,7 +28,8 @@ const (
 // stage1SystemPrompt is the system prompt for per-source summarization calls.
 const stage1SystemPrompt = "You are a data summarization assistant. Extract the key facts, figures, and notable items " +
 	"from the source data below. Preserve all URLs, dates, numbers, and proper nouns exactly. " +
-	"Remove redundant or boilerplate content. Output a concise summary in plain text."
+	"Remove redundant or boilerplate content. Output a concise summary in plain text. " +
+	"Begin immediately with the summary — no preamble."
 
 // summaryMaxWords returns the configured summary word target or the default.
 func (c MultiStageConfig) summaryMaxWords() int {
@@ -238,7 +239,7 @@ func (l *LLMSynthesizer) synthesizeMultiStage(ctx context.Context, title string,
 	if err != nil {
 		return "", err
 	}
-	return trimConversationalClosing(repairBrokenURLs(result)), nil
+	return postProcess(result), nil
 }
 
 // boundStage2Summaries truncates summaries so the stage 2 prompt fits within
@@ -302,7 +303,7 @@ func (l *LLMSynthesizer) assembleStage2Prompt(title string, summaries []sourceSu
 	b.WriteString(missingDataInstruction)
 	b.WriteString("\n")
 
-	b.WriteString("\n---\nRemember: static document only. No conversational closing.\n")
+	b.WriteString("\n---\nBegin with report content immediately. No preamble, no reasoning, no conversational closing.\n")
 
 	return b.String()
 }

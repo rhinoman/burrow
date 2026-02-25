@@ -84,6 +84,8 @@ func (p *PassthroughSynthesizer) Synthesize(_ context.Context, title string, _ s
 // Shared prompt instructions used by both single-stage and multi-stage synthesis paths.
 const (
 	staticDocumentInstruction = "Output format: This is a static report document, not a conversation. " +
+		"Begin your response with the report content immediately — no preamble, no reasoning, no planning. " +
+		"Do NOT write phrases like \"The user wants\", \"I should\", \"Let me analyze\", or \"Here is the report\". " +
 		"Never include greetings, sign-offs, offers to help, or closing phrases like " +
 		"\"Let me know if you have questions\" or \"Reply to refine.\" " +
 		"End the report with the final section's content."
@@ -181,13 +183,13 @@ func (l *LLMSynthesizer) synthesizeSingle(ctx context.Context, title string, sys
 	userPrompt.WriteString(missingDataInstruction)
 	userPrompt.WriteString("\n")
 
-	userPrompt.WriteString("\n---\nRemember: static document only. No conversational closing.\n")
+	userPrompt.WriteString("\n---\nBegin with report content immediately. No preamble, no reasoning, no conversational closing.\n")
 
 	result, err := l.provider.Complete(ctx, fullSystem, userPrompt.String())
 	if err != nil {
 		return "", err
 	}
-	return trimConversationalClosing(repairBrokenURLs(result)), nil
+	return postProcess(result), nil
 }
 
 // brokenURLPattern matches markdown link URLs that contain newlines: ](url\nrest)
@@ -279,6 +281,118 @@ func trimConversationalClosing(text string) string {
 
 	result := strings.Join(lines[:cutIndex], "\n")
 	return strings.TrimRight(result, " \t\n\r") + "\n"
+}
+
+// postProcess applies all output cleaning steps to LLM output.
+func postProcess(text string) string {
+	text = stripThinkTags(text)
+	text = trimThinkingPreamble(text)
+	text = repairBrokenURLs(text)
+	text = trimConversationalClosing(text)
+	return text
+}
+
+// thinkTagPattern matches <think>...</think> blocks (case-insensitive, multiline).
+var thinkTagPattern = regexp.MustCompile(`(?is)<think>.*?</think>\s*`)
+
+// stripThinkTags removes <think>...</think> blocks emitted by reasoning models
+// (DeepSeek-R1, QwQ, etc.). Always enabled — a no-op on clean output.
+func stripThinkTags(text string) string {
+	return thinkTagPattern.ReplaceAllString(text, "")
+}
+
+// thinkingPreamblePatterns are line-start patterns that indicate the LLM is
+// "thinking out loud" rather than producing report content.
+var thinkingPreamblePatterns = []string{
+	"the user wants",
+	"the user is asking",
+	"i should",
+	"i need to",
+	"i will",
+	"i'll",
+	"let me analyze",
+	"let me review",
+	"let me examine",
+	"let me look",
+	"let me start",
+	"let me create",
+	"let me generate",
+	"let me summarize",
+	"let me compile",
+	"let me put together",
+	"here is the report",
+	"here's the report",
+	"here is a report",
+	"here's a report",
+	"here is your report",
+	"here's your report",
+	"below is the report",
+	"below is a report",
+	"i've compiled",
+	"i have compiled",
+	"i've analyzed",
+	"i have analyzed",
+	"i've reviewed",
+	"i have reviewed",
+	"based on the data provided",
+	"based on the information",
+	"based on the source data",
+	"looking at the data",
+	"looking at the source",
+	"analyzing the data",
+	"after reviewing",
+	"after analyzing",
+	"okay, ",
+	"sure, ",
+	"certainly, ",
+	"alright, ",
+}
+
+// trimThinkingPreamble strips "thinking out loud" lines from the start of LLM
+// output. Walks forward, removing lines that match known thinking patterns or
+// are empty, until the first markdown heading or first non-matching non-empty line.
+// Always enabled — a no-op on clean output that starts with content.
+func trimThinkingPreamble(text string) string {
+	lines := strings.Split(text, "\n")
+	startIdx := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Empty lines at the start get skipped.
+		if trimmed == "" {
+			startIdx = i + 1
+			continue
+		}
+
+		// A markdown heading is real content — stop.
+		if strings.HasPrefix(trimmed, "#") {
+			startIdx = i
+			break
+		}
+
+		// Check if this line matches a thinking pattern.
+		lower := strings.ToLower(trimmed)
+		matched := false
+		for _, pat := range thinkingPreamblePatterns {
+			if strings.HasPrefix(lower, pat) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			startIdx = i + 1
+			continue
+		}
+
+		// Non-empty, non-matching, non-heading — real content, stop.
+		startIdx = i
+		break
+	}
+
+	if startIdx >= len(lines) {
+		return text // all lines were preamble — return original to avoid empty output
+	}
+	return strings.Join(lines[startIdx:], "\n")
 }
 
 // stripServiceNames replaces any service name found in text with a generic placeholder.

@@ -251,8 +251,8 @@ func TestStage2PromptContents(t *testing.T) {
 	if !strings.Contains(stage2.user, "Daily Brief") {
 		t.Error("stage 2 prompt missing report title")
 	}
-	if !strings.Contains(stage2.user, "static document only") {
-		t.Error("stage 2 prompt missing static document instruction")
+	if !strings.Contains(stage2.user, "No preamble, no reasoning") {
+		t.Error("stage 2 prompt missing anti-thinking reinforcement")
 	}
 	if !strings.Contains(stage2.user, "exact URL") {
 		t.Error("stage 2 prompt missing URL instruction")

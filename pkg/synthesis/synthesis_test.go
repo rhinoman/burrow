@@ -390,8 +390,12 @@ func TestLLMSynthesizerStaticDocumentInstruction(t *testing.T) {
 	if !strings.Contains(provider.lastSystem, "Reply to refine") {
 		t.Error("expected explicit prohibition of conversational closing in system prompt")
 	}
+	// Anti-thinking instruction in system prompt
+	if !strings.Contains(provider.lastSystem, "no preamble, no reasoning") {
+		t.Error("expected anti-thinking instruction in system prompt")
+	}
 	// Short reinforcement in user prompt
-	if !strings.Contains(provider.lastUser, "static document only") {
+	if !strings.Contains(provider.lastUser, "No preamble, no reasoning") {
 		t.Error("expected short reinforcement in user prompt")
 	}
 }
@@ -513,6 +517,176 @@ func TestLLMSynthesizerRepairsBrokenURLs(t *testing.T) {
 	}
 	if !strings.Contains(got, "item?id=123") {
 		t.Error("expected repaired URL in Synthesize output")
+	}
+}
+
+// --- stripThinkTags tests ---
+
+func TestStripThinkTagsBasic(t *testing.T) {
+	input := "<think>I need to analyze this data carefully.</think>\n# Report\n\nContent here."
+	got := stripThinkTags(input)
+	if strings.Contains(got, "think") {
+		t.Error("expected think tags to be stripped")
+	}
+	if !strings.Contains(got, "# Report") {
+		t.Error("expected report content preserved")
+	}
+}
+
+func TestStripThinkTagsMultiline(t *testing.T) {
+	input := "<think>\nThe user wants a report.\nI should extract numbers.\n</think>\n# Report\n\nData."
+	got := stripThinkTags(input)
+	if strings.Contains(got, "The user wants") {
+		t.Error("expected multiline think block stripped")
+	}
+	if !strings.Contains(got, "# Report") {
+		t.Error("expected content preserved")
+	}
+}
+
+func TestStripThinkTagsCaseInsensitive(t *testing.T) {
+	input := "<THINK>reasoning</THINK>\n# Report"
+	got := stripThinkTags(input)
+	if strings.Contains(got, "reasoning") {
+		t.Error("expected case-insensitive think tag stripped")
+	}
+}
+
+func TestStripThinkTagsNoTags(t *testing.T) {
+	input := "# Report\n\nClean output."
+	got := stripThinkTags(input)
+	if got != input {
+		t.Error("expected unchanged output when no think tags present")
+	}
+}
+
+func TestStripThinkTagsMultipleBlocks(t *testing.T) {
+	input := "<think>first</think>\nSome content\n<think>second</think>\nMore content"
+	got := stripThinkTags(input)
+	if strings.Contains(got, "first") || strings.Contains(got, "second") {
+		t.Error("expected all think blocks stripped")
+	}
+	if !strings.Contains(got, "Some content") || !strings.Contains(got, "More content") {
+		t.Error("expected content between blocks preserved")
+	}
+}
+
+// --- trimThinkingPreamble tests ---
+
+func TestTrimThinkingPreambleBasic(t *testing.T) {
+	input := "The user wants a daily briefing report.\nI should extract key data.\n\n# Daily Brief\n\nContent."
+	got := trimThinkingPreamble(input)
+	if strings.Contains(got, "The user wants") {
+		t.Error("expected thinking preamble stripped")
+	}
+	if !strings.HasPrefix(got, "# Daily Brief") {
+		t.Errorf("expected to start with heading, got %q", got[:min(50, len(got))])
+	}
+}
+
+func TestTrimThinkingPreamblLetMeAnalyze(t *testing.T) {
+	input := "Let me analyze the data.\nLet me start by examining the weather.\n\n# Weather Report\n\nForecast."
+	got := trimThinkingPreamble(input)
+	if strings.Contains(got, "Let me analyze") {
+		t.Error("expected 'Let me analyze' stripped")
+	}
+	if !strings.HasPrefix(got, "# Weather Report") {
+		t.Errorf("expected heading, got %q", got[:min(50, len(got))])
+	}
+}
+
+func TestTrimThinkingPreambleHereIsTheReport(t *testing.T) {
+	input := "Here is the report based on the provided data:\n\n# Report\n\nContent."
+	got := trimThinkingPreamble(input)
+	if strings.Contains(got, "Here is the report") {
+		t.Error("expected 'Here is the report' stripped")
+	}
+	if !strings.HasPrefix(got, "# Report") {
+		t.Errorf("expected heading, got %q", got[:min(50, len(got))])
+	}
+}
+
+func TestTrimThinkingPreambleCleanOutput(t *testing.T) {
+	input := "# Report\n\nClean output from the start."
+	got := trimThinkingPreamble(input)
+	if got != input {
+		t.Error("expected clean output unchanged")
+	}
+}
+
+func TestTrimThinkingPreambleNonMatchingContent(t *testing.T) {
+	input := "Weather conditions remain stable.\n\nMore content."
+	got := trimThinkingPreamble(input)
+	if got != input {
+		t.Error("expected non-matching content unchanged")
+	}
+}
+
+func TestTrimThinkingPreambleAllPreamble(t *testing.T) {
+	input := "I should analyze this data.\nLet me review the sources."
+	got := trimThinkingPreamble(input)
+	// When all lines are preamble, return original to avoid empty output.
+	if got != input {
+		t.Error("expected original returned when all lines match preamble")
+	}
+}
+
+func TestTrimThinkingPreambleLeadingBlanks(t *testing.T) {
+	input := "\n\n\nI should start by reviewing.\n\n# Report\n\nContent."
+	got := trimThinkingPreamble(input)
+	if strings.Contains(got, "I should") {
+		t.Error("expected thinking stripped after leading blanks")
+	}
+	if !strings.HasPrefix(got, "# Report") {
+		t.Errorf("expected heading, got %q", got[:min(50, len(got))])
+	}
+}
+
+// --- LLM integration: anti-thinking post-processing ---
+
+func TestLLMSynthesizerStripsThinkTags(t *testing.T) {
+	provider := &fakeProvider{
+		response: "<think>I need to analyze this.</think>\n# Report\n\nKey findings.\n",
+	}
+	synth := NewLLMSynthesizer(provider, false)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	got, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if strings.Contains(got, "think") {
+		t.Error("expected think tags stripped from output")
+	}
+	if !strings.Contains(got, "Key findings.") {
+		t.Error("expected report content preserved")
+	}
+}
+
+func TestLLMSynthesizerStripsThinkingPreamble(t *testing.T) {
+	provider := &fakeProvider{
+		response: "The user wants a daily report.\nI should analyze the data.\n\n# Daily Brief\n\nGood data here.\n",
+	}
+	synth := NewLLMSynthesizer(provider, false)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	got, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if strings.Contains(got, "The user wants") {
+		t.Error("expected thinking preamble stripped from output")
+	}
+	if !strings.Contains(got, "Good data here.") {
+		t.Error("expected report content preserved")
 	}
 }
 
