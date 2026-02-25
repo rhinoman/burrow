@@ -258,6 +258,97 @@ func TestLoadAllRoutinesEmpty(t *testing.T) {
 	}
 }
 
+func TestValidateRoutineStrategyValid(t *testing.T) {
+	for _, strategy := range []string{"auto", "single", "multi-stage", ""} {
+		r := &Routine{
+			Report:    ReportConfig{Title: "T"},
+			Synthesis: SynthesisConfig{Strategy: strategy},
+			Sources:   []SourceConfig{{Service: "s", Tool: "t"}},
+		}
+		if err := ValidateRoutine(r); err != nil {
+			t.Errorf("strategy %q should be valid, got: %v", strategy, err)
+		}
+	}
+}
+
+func TestValidateRoutineStrategyInvalid(t *testing.T) {
+	r := &Routine{
+		Report:    ReportConfig{Title: "T"},
+		Synthesis: SynthesisConfig{Strategy: "invalid"},
+		Sources:   []SourceConfig{{Service: "s", Tool: "t"}},
+	}
+	err := ValidateRoutine(r)
+	if err == nil {
+		t.Fatal("expected error for invalid strategy")
+	}
+	if !strings.Contains(err.Error(), "invalid strategy") {
+		t.Errorf("expected strategy error, got: %v", err)
+	}
+}
+
+func TestLoadRoutineWithSynthesisStrategy(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+report:
+  title: "Test"
+synthesis:
+  system: "Be concise."
+  strategy: multi-stage
+  summary_max_words: 300
+sources:
+  - service: test
+    tool: fetch
+`
+	path := filepath.Join(dir, "strat.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := LoadRoutine(path)
+	if err != nil {
+		t.Fatalf("LoadRoutine: %v", err)
+	}
+
+	if r.Synthesis.Strategy != "multi-stage" {
+		t.Errorf("expected strategy multi-stage, got %q", r.Synthesis.Strategy)
+	}
+	if r.Synthesis.SummaryMaxWords != 300 {
+		t.Errorf("expected summary_max_words 300, got %d", r.Synthesis.SummaryMaxWords)
+	}
+}
+
+func TestLoadRoutineWithMaxSourceWords(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+report:
+  title: "Test"
+synthesis:
+  system: "Be concise."
+  strategy: multi-stage
+  summary_max_words: 300
+  max_source_words: 8000
+sources:
+  - service: test
+    tool: fetch
+`
+	path := filepath.Join(dir, "chunked.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := LoadRoutine(path)
+	if err != nil {
+		t.Fatalf("LoadRoutine: %v", err)
+	}
+
+	if r.Synthesis.MaxSourceWords != 8000 {
+		t.Errorf("expected max_source_words 8000, got %d", r.Synthesis.MaxSourceWords)
+	}
+	if r.Synthesis.SummaryMaxWords != 300 {
+		t.Errorf("expected summary_max_words 300, got %d", r.Synthesis.SummaryMaxWords)
+	}
+}
+
 func TestLoadAllRoutinesSkipsBadFiles(t *testing.T) {
 	dir := t.TempDir()
 

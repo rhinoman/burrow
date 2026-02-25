@@ -399,7 +399,26 @@ func buildSynthesizer(routine *pipeline.Routine, cfg *config.Config) (synthesis.
 	// Strip attribution for remote providers when configured
 	stripAttribution := provCfg.Privacy == "remote" && cfg.Privacy.StripAttributionForRemote
 
-	return synthesis.NewLLMSynthesizer(provider, stripAttribution), nil
+	// Resolve context window: explicit config > privacy-based default.
+	contextWindow := provCfg.ContextWindow
+	if contextWindow == 0 {
+		switch provCfg.Privacy {
+		case "local":
+			contextWindow = 8192
+		default: // "remote" or unset
+			contextWindow = 32768
+		}
+	}
+
+	synth := synthesis.NewLLMSynthesizer(provider, stripAttribution)
+	synth.SetMultiStage(synthesis.MultiStageConfig{
+		Strategy:        routine.Synthesis.Strategy,
+		SummaryMaxWords: routine.Synthesis.SummaryMaxWords,
+		MaxSourceWords:  routine.Synthesis.MaxSourceWords,
+		Concurrency:     routine.Synthesis.Concurrency,
+		ContextWindow:   contextWindow,
+	})
+	return synth, nil
 }
 
 // debugSynthesizer wraps a Synthesizer to log timing and sizes when --debug is active.

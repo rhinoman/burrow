@@ -17,12 +17,13 @@ type Service interface {
 
 // Result holds the output of a single service query.
 type Result struct {
-	Service   string
-	Tool      string
-	Data      []byte
-	URL       string // the request URL (for debugging)
-	Timestamp time.Time
-	Error     string
+	Service      string
+	Tool         string
+	Data         []byte
+	URL          string // the request URL (for debugging)
+	Timestamp    time.Time
+	Error        string
+	ContextLabel string // user-provided label for better synthesis prompts (e.g., "NWS 7-Day Forecast — Anchorage")
 }
 
 // Registry manages named service instances.

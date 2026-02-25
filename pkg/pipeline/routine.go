@@ -13,14 +13,14 @@ import (
 
 // Routine defines a scheduled data-collection-and-synthesis job.
 type Routine struct {
-	Name     string         `yaml:"-"` // derived from filename
-	Schedule string         `yaml:"schedule,omitempty"`
-	Timezone string         `yaml:"timezone,omitempty"`
-	Jitter   int            `yaml:"jitter,omitempty"`
-	LLM      string         `yaml:"llm,omitempty"`
-	Report   ReportConfig   `yaml:"report"`
+	Name      string          `yaml:"-"` // derived from filename
+	Schedule  string          `yaml:"schedule,omitempty"`
+	Timezone  string          `yaml:"timezone,omitempty"`
+	Jitter    int             `yaml:"jitter,omitempty"`
+	LLM       string          `yaml:"llm,omitempty"`
+	Report    ReportConfig    `yaml:"report"`
 	Synthesis SynthesisConfig `yaml:"synthesis,omitempty"`
-	Sources  []SourceConfig `yaml:"sources"`
+	Sources   []SourceConfig  `yaml:"sources"`
 }
 
 // ReportConfig controls report generation.
@@ -40,7 +40,11 @@ func (rc ReportConfig) ChartsEnabled() bool {
 
 // SynthesisConfig holds the LLM system prompt for synthesis.
 type SynthesisConfig struct {
-	System string `yaml:"system,omitempty"`
+	System          string `yaml:"system,omitempty"`
+	Strategy        string `yaml:"strategy,omitempty"`           // auto | single | multi-stage
+	SummaryMaxWords int    `yaml:"summary_max_words,omitempty"`  // target words per summary (default: 500)
+	MaxSourceWords  int    `yaml:"max_source_words,omitempty"`   // max words per source before chunking (default: 10000)
+	Concurrency     int    `yaml:"concurrency,omitempty"`        // max concurrent stage 1 LLM calls (default: 1)
 }
 
 // SourceConfig defines a single data source within a routine.
@@ -139,6 +143,12 @@ func ValidateRoutine(r *Routine) error {
 		}
 		if s.Tool == "" {
 			return fmt.Errorf("source[%d] missing tool", i)
+		}
+	}
+	if r.Synthesis.Strategy != "" {
+		validStrategies := map[string]bool{"auto": true, "single": true, "multi-stage": true}
+		if !validStrategies[r.Synthesis.Strategy] {
+			return fmt.Errorf("invalid strategy %q (must be auto, single, or multi-stage)", r.Synthesis.Strategy)
 		}
 	}
 	return nil

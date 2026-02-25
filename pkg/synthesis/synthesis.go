@@ -81,10 +81,29 @@ func (p *PassthroughSynthesizer) Synthesize(_ context.Context, title string, _ s
 	return b.String(), nil
 }
 
+// Shared prompt instructions used by both single-stage and multi-stage synthesis paths.
+const (
+	staticDocumentInstruction = "Output format: This is a static report document, not a conversation. " +
+		"Never include greetings, sign-offs, offers to help, or closing phrases like " +
+		"\"Let me know if you have questions\" or \"Reply to refine.\" " +
+		"End the report with the final section's content."
+
+	urlInstruction = "When source data contains URLs or link fields (\"link\", \"url\", \"href\"), " +
+		"use the exact URL from the data as-is — do not construct, guess, or modify URLs. " +
+		"Format them as markdown links: [Title](https://example.com). " +
+		"Every news item, paper, or article with a URL must have a clickable link in the report. " +
+		"Never break a URL across lines."
+
+	missingDataInstruction = "When source data has missing or incomplete fields, always analyze what IS present. " +
+		"Never skip a section or declare \"none included\" because some records lack a field. " +
+		"Present the available data, note any limitations briefly in parentheses, and move on."
+)
+
 // LLMSynthesizer uses an LLM provider for synthesis.
 type LLMSynthesizer struct {
 	provider         Provider
 	stripAttribution bool
+	multiStage       MultiStageConfig
 }
 
 // NewLLMSynthesizer creates a synthesizer backed by an LLM provider.
@@ -94,18 +113,29 @@ func NewLLMSynthesizer(provider Provider, stripAttribution bool) *LLMSynthesizer
 	return &LLMSynthesizer{provider: provider, stripAttribution: stripAttribution}
 }
 
+// SetMultiStage configures multi-stage synthesis behavior.
+func (l *LLMSynthesizer) SetMultiStage(cfg MultiStageConfig) {
+	l.multiStage = cfg
+}
+
 // Synthesize sends collected results through the LLM for synthesis.
+// It routes to single-stage or multi-stage based on configuration and data size.
 func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPrompt string, results []*services.Result) (string, error) {
+	if l.shouldMultiStage(results) {
+		return l.synthesizeMultiStage(ctx, title, systemPrompt, results)
+	}
+	return l.synthesizeSingle(ctx, title, systemPrompt, results)
+}
+
+// synthesizeSingle is the original single-call synthesis path.
+func (l *LLMSynthesizer) synthesizeSingle(ctx context.Context, title string, systemPrompt string, results []*services.Result) (string, error) {
 	// Append static-document instruction to system prompt so it takes
 	// precedence over the LLM's conversational training.
 	fullSystem := systemPrompt
 	if fullSystem != "" {
 		fullSystem += "\n\n"
 	}
-	fullSystem += "Output format: This is a static report document, not a conversation. " +
-		"Never include greetings, sign-offs, offers to help, or closing phrases like " +
-		"\"Let me know if you have questions\" or \"Reply to refine.\" " +
-		"End the report with the final section's content."
+	fullSystem += staticDocumentInstruction
 
 	var userPrompt strings.Builder
 	userPrompt.WriteString("Generate a report titled: ")
@@ -114,6 +144,9 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 
 	for i, r := range results {
 		label := r.Service + " — " + r.Tool
+		if r.ContextLabel != "" {
+			label = r.ContextLabel
+		}
 		if l.stripAttribution {
 			label = fmt.Sprintf("Source %d", i+1)
 		}
@@ -141,16 +174,12 @@ func (l *LLMSynthesizer) Synthesize(ctx context.Context, title string, systemPro
 	}
 
 	userPrompt.WriteString("\n---\n")
-	userPrompt.WriteString("When source data contains URLs or link fields (\"link\", \"url\", \"href\"), ")
-	userPrompt.WriteString("use the exact URL from the data as-is — do not construct, guess, or modify URLs. ")
-	userPrompt.WriteString("Format them as markdown links: [Title](https://example.com). ")
-	userPrompt.WriteString("Every news item, paper, or article with a URL must have a clickable link in the report. ")
-	userPrompt.WriteString("Never break a URL across lines.\n")
+	userPrompt.WriteString(urlInstruction)
+	userPrompt.WriteString("\n")
 
 	userPrompt.WriteString("\n---\n")
-	userPrompt.WriteString("When source data has missing or incomplete fields, always analyze what IS present. ")
-	userPrompt.WriteString("Never skip a section or declare \"none included\" because some records lack a field. ")
-	userPrompt.WriteString("Present the available data, note any limitations briefly in parentheses, and move on.\n")
+	userPrompt.WriteString(missingDataInstruction)
+	userPrompt.WriteString("\n")
 
 	userPrompt.WriteString("\n---\nRemember: static document only. No conversational closing.\n")
 

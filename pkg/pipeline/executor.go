@@ -77,10 +77,11 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 			defer func() {
 				if r := recover(); r != nil {
 					results[idx] = &services.Result{
-						Service:   src.Service,
-						Tool:      src.Tool,
-						Timestamp: time.Now().UTC(),
-						Error:     fmt.Sprintf("panic: %v", r),
+						Service:      src.Service,
+						Tool:         src.Tool,
+						Timestamp:    time.Now().UTC(),
+						Error:        fmt.Sprintf("panic: %v", r),
+						ContextLabel: src.ContextLabel,
 					}
 				}
 			}()
@@ -97,10 +98,11 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 					case <-ctx.Done():
 						timer.Stop()
 						results[idx] = &services.Result{
-							Service:   src.Service,
-							Tool:      src.Tool,
-							Timestamp: time.Now().UTC(),
-							Error:     ctx.Err().Error(),
+							Service:      src.Service,
+							Tool:         src.Tool,
+							Timestamp:    time.Now().UTC(),
+							Error:        ctx.Err().Error(),
+							ContextLabel: src.ContextLabel,
 						}
 						return
 					case <-timer.C:
@@ -111,10 +113,11 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 			svc, err := e.registry.Get(src.Service)
 			if err != nil {
 				results[idx] = &services.Result{
-					Service:   src.Service,
-					Tool:      src.Tool,
-					Timestamp: time.Now().UTC(),
-					Error:     fmt.Sprintf("service not found: %v", err),
+					Service:      src.Service,
+					Tool:         src.Tool,
+					Timestamp:    time.Now().UTC(),
+					Error:        fmt.Sprintf("service not found: %v", err),
+					ContextLabel: src.ContextLabel,
 				}
 				return
 			}
@@ -132,16 +135,18 @@ func (e *Executor) Run(ctx context.Context, routine *Routine) (*reports.Report, 
 			result, err := svc.Execute(ctx, src.Tool, params)
 			if err != nil {
 				results[idx] = &services.Result{
-					Service:   src.Service,
-					Tool:      src.Tool,
-					Timestamp: time.Now().UTC(),
-					Error:     err.Error(),
+					Service:      src.Service,
+					Tool:         src.Tool,
+					Timestamp:    time.Now().UTC(),
+					Error:        err.Error(),
+					ContextLabel: src.ContextLabel,
 				}
 				e.debug.Printf("  source %d result: ERROR %v", idx, err)
 				return
 			}
 
 			results[idx] = result
+			results[idx].ContextLabel = src.ContextLabel
 
 			if result.Error != "" {
 				e.debug.Printf("  source %d result: FAIL (%s)", idx, result.Error)

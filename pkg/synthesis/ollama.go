@@ -13,20 +13,22 @@ import (
 
 // OllamaProvider implements Provider using a local Ollama instance.
 type OllamaProvider struct {
-	endpoint string
-	model    string
-	client   *http.Client
+	endpoint      string
+	model         string
+	contextWindow int
+	client        *http.Client
 }
 
 // NewOllamaProvider creates a provider that talks to Ollama's /api/chat endpoint.
 // Default endpoint is http://localhost:11434 if empty. Default timeout is 5 minutes.
 func NewOllamaProvider(endpoint, model string) *OllamaProvider {
-	return NewOllamaProviderWithTimeout(endpoint, model, 0)
+	return NewOllamaProviderWithTimeout(endpoint, model, 0, 0)
 }
 
 // NewOllamaProviderWithTimeout creates an Ollama provider with a custom timeout.
-// A timeout of 0 uses the default (5 minutes).
-func NewOllamaProviderWithTimeout(endpoint, model string, timeoutSecs int) *OllamaProvider {
+// A timeout of 0 uses the default (5 minutes). A contextWindow of 0 omits num_ctx
+// from requests, letting Ollama use its model default.
+func NewOllamaProviderWithTimeout(endpoint, model string, timeoutSecs, contextWindow int) *OllamaProvider {
 	if endpoint == "" {
 		endpoint = "http://localhost:11434"
 	}
@@ -36,8 +38,9 @@ func NewOllamaProviderWithTimeout(endpoint, model string, timeoutSecs int) *Olla
 		timeout = time.Duration(timeoutSecs) * time.Second
 	}
 	return &OllamaProvider{
-		endpoint: endpoint,
-		model:    model,
+		endpoint:      endpoint,
+		model:         model,
+		contextWindow: contextWindow,
 		client: &http.Client{
 			Timeout:   timeout,
 			Transport: &http.Transport{},
@@ -46,9 +49,10 @@ func NewOllamaProviderWithTimeout(endpoint, model string, timeoutSecs int) *Olla
 }
 
 type ollamaRequest struct {
-	Model    string          `json:"model"`
-	Messages []ollamaMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
+	Model    string            `json:"model"`
+	Messages []ollamaMessage   `json:"messages"`
+	Stream   bool              `json:"stream"`
+	Options  map[string]int    `json:"options,omitempty"`
 }
 
 type ollamaMessage struct {
@@ -74,11 +78,16 @@ func (o *OllamaProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 		messages = append([]ollamaMessage{{Role: "system", Content: systemPrompt}}, messages...)
 	}
 
-	body, err := json.Marshal(ollamaRequest{
+	ollamaReq := ollamaRequest{
 		Model:    o.model,
 		Messages: messages,
 		Stream:   false,
-	})
+	}
+	if o.contextWindow > 0 {
+		ollamaReq.Options = map[string]int{"num_ctx": o.contextWindow}
+	}
+
+	body, err := json.Marshal(ollamaReq)
 	if err != nil {
 		return "", fmt.Errorf("marshaling request: %w", err)
 	}
