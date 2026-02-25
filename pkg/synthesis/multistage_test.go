@@ -625,6 +625,127 @@ func TestMaxSourceWordsDerivedFromContextWindow(t *testing.T) {
 	}
 }
 
+// --- Auto threshold with context window tests ---
+
+func TestAutoThresholdWithLargeContextWindow(t *testing.T) {
+	// Haiku 200K window: threshold = 200000 * 0.5 * 4 = 400,000 bytes
+	// 190KB data < 400KB threshold → single-stage
+	synth := NewLLMSynthesizer(&fakeProvider{}, false)
+	synth.SetMultiStage(MultiStageConfig{Strategy: "auto", ContextWindow: 200000})
+
+	data := make([]byte, 190*1024) // 190KB
+	results := []*services.Result{{Data: data}}
+
+	if synth.shouldMultiStage(results) {
+		t.Error("expected single-stage for 190KB with 200K context window")
+	}
+}
+
+func TestAutoThresholdWithSmallContextWindow(t *testing.T) {
+	// Local qwen3-32b 65K window: threshold = 65536 * 0.5 * 4 = 131,072 bytes = 128KB
+	// 190KB data > 128KB threshold → multi-stage
+	synth := NewLLMSynthesizer(&fakeProvider{}, false)
+	synth.SetMultiStage(MultiStageConfig{Strategy: "auto", ContextWindow: 65536})
+
+	data := make([]byte, 190*1024) // 190KB
+	results := []*services.Result{{Data: data}}
+
+	if !synth.shouldMultiStage(results) {
+		t.Error("expected multi-stage for 190KB with 65K context window")
+	}
+}
+
+func TestAutoThresholdExplicitOverride(t *testing.T) {
+	// Explicit ThresholdBytes takes precedence over ContextWindow
+	synth := NewLLMSynthesizer(&fakeProvider{}, false)
+	synth.SetMultiStage(MultiStageConfig{
+		Strategy:       "auto",
+		ThresholdBytes: 100 * 1024, // 100KB explicit
+		ContextWindow:  200000,     // would give 400KB if used
+	})
+
+	data := make([]byte, 150*1024) // 150KB — above explicit 100KB, below context-derived 400KB
+	results := []*services.Result{{Data: data}}
+
+	if !synth.shouldMultiStage(results) {
+		t.Error("expected multi-stage: 150KB exceeds explicit 100KB threshold")
+	}
+}
+
+func TestAutoThresholdDefault8KMatchesLegacy(t *testing.T) {
+	// Default local 8K: threshold = 8192 * 0.5 * 4 = 16,384 = defaultThresholdBytes
+	cfg := MultiStageConfig{ContextWindow: 8192}
+	got := cfg.autoThresholdBytes()
+	if got != defaultThresholdBytes {
+		t.Errorf("8K context window should produce %d threshold, got %d", defaultThresholdBytes, got)
+	}
+}
+
+func TestAutoThresholdNoContextWindow(t *testing.T) {
+	// No ContextWindow set → falls back to defaultThresholdBytes
+	cfg := MultiStageConfig{}
+	got := cfg.autoThresholdBytes()
+	if got != defaultThresholdBytes {
+		t.Errorf("no context window should fall back to %d, got %d", defaultThresholdBytes, got)
+	}
+}
+
+// --- Stage 2 bounding tests ---
+
+func TestBoundStage2SummariesNoOpWhenFits(t *testing.T) {
+	synth := NewLLMSynthesizer(&fakeProvider{}, false)
+	synth.SetMultiStage(MultiStageConfig{ContextWindow: 200000}) // huge window
+
+	summaries := []sourceSummary{
+		{label: "A", summary: "Short summary."},
+		{label: "B", summary: "Another short one."},
+	}
+
+	bounded := synth.boundStage2Summaries(summaries)
+	for i, s := range bounded {
+		if s.summary != summaries[i].summary {
+			t.Errorf("summary %d was truncated when it should fit: %q", i, s.summary)
+		}
+	}
+}
+
+func TestBoundStage2SummariesTruncatesWhenOverBudget(t *testing.T) {
+	synth := NewLLMSynthesizer(&fakeProvider{}, false)
+	// Tiny context window: 100 tokens → budget = 100 * 0.6 * 4 = 240 bytes
+	synth.SetMultiStage(MultiStageConfig{ContextWindow: 100})
+
+	// Each summary is ~200 words → way over 240 byte budget
+	longText := strings.Repeat("word ", 200)
+	summaries := []sourceSummary{
+		{label: "A", summary: longText},
+		{label: "B", summary: longText},
+	}
+
+	bounded := synth.boundStage2Summaries(summaries)
+	for i, s := range bounded {
+		if len(s.summary) >= len(longText) {
+			t.Errorf("summary %d was not truncated (len %d)", i, len(s.summary))
+		}
+		if !strings.HasSuffix(s.summary, "...") {
+			t.Errorf("summary %d missing truncation ellipsis", i)
+		}
+	}
+}
+
+func TestBoundStage2SummariesNoContextWindow(t *testing.T) {
+	synth := NewLLMSynthesizer(&fakeProvider{}, false)
+	synth.SetMultiStage(MultiStageConfig{}) // no context window
+
+	summaries := []sourceSummary{
+		{label: "A", summary: strings.Repeat("word ", 10000)},
+	}
+
+	bounded := synth.boundStage2Summaries(summaries)
+	if bounded[0].summary != summaries[0].summary {
+		t.Error("should not truncate when no context window is configured")
+	}
+}
+
 // --- Chunked summarization test ---
 
 func TestSummarizeSourceChunksLargeData(t *testing.T) {

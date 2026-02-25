@@ -46,6 +46,28 @@ func (c MultiStageConfig) thresholdBytes() int {
 	return defaultThresholdBytes
 }
 
+// autoThresholdBytes returns the threshold for auto strategy decisions.
+// It scales with the model's context window so large-context cloud models
+// use single-stage (better cross-source context) while small-context local
+// models use multi-stage (avoids overflow).
+//
+// Math: 1 token ≈ 4 bytes (conservative for English/JSON mix).
+// Use 50% of context window for source data, leaving room for prompts + output.
+//
+// Examples:
+//   - Haiku 200K tokens: 200000 * 0.5 * 4 = 400KB threshold
+//   - Local qwen3-32b 65K: 65536 * 0.5 * 4 = 128KB threshold
+//   - Default local 8K: 8192 * 0.5 * 4 = 16KB (matches defaultThresholdBytes)
+func (c MultiStageConfig) autoThresholdBytes() int {
+	if c.ThresholdBytes > 0 {
+		return c.ThresholdBytes // explicit override always wins
+	}
+	if c.ContextWindow > 0 {
+		return int(float64(c.ContextWindow) * 0.5 * 4)
+	}
+	return defaultThresholdBytes
+}
+
 // maxSourceWords returns the configured max source words or the default.
 // When MaxSourceWords is 0 and ContextWindow is set, derives from context window
 // using 40% of tokens (reserving ~60% for system prompt + response).
@@ -80,7 +102,7 @@ func (l *LLMSynthesizer) shouldMultiStage(results []*services.Result) bool {
 		for _, r := range results {
 			total += len(r.Data)
 		}
-		return total > l.multiStage.thresholdBytes()
+		return total > l.multiStage.autoThresholdBytes()
 	}
 }
 
@@ -199,6 +221,9 @@ func (l *LLMSynthesizer) synthesizeMultiStage(ctx context.Context, title string,
 		}
 	}
 
+	// Bound summaries so stage 2 prompt fits within context window.
+	summaries = l.boundStage2Summaries(summaries)
+
 	// Stage 2: assembly
 	userPrompt := l.assembleStage2Prompt(title, summaries)
 
@@ -214,6 +239,44 @@ func (l *LLMSynthesizer) synthesizeMultiStage(ctx context.Context, title string,
 		return "", err
 	}
 	return trimConversationalClosing(repairBrokenURLs(result)), nil
+}
+
+// boundStage2Summaries truncates summaries so the stage 2 prompt fits within
+// the model's context window. Uses 60% of the context window (in bytes, at
+// ~4 bytes/token) for summaries, leaving room for the system prompt and output.
+// When total summary text exceeds the budget, each summary is proportionally
+// truncated to fit.
+func (l *LLMSynthesizer) boundStage2Summaries(summaries []sourceSummary) []sourceSummary {
+	if l.multiStage.ContextWindow <= 0 {
+		return summaries
+	}
+
+	// 60% of context for summaries (rest for system prompt + generation)
+	budgetBytes := int(float64(l.multiStage.ContextWindow) * 0.6 * 4)
+
+	totalBytes := 0
+	for _, s := range summaries {
+		totalBytes += len(s.summary)
+	}
+
+	if totalBytes <= budgetBytes {
+		return summaries
+	}
+
+	// Proportionally truncate each summary
+	ratio := float64(budgetBytes) / float64(totalBytes)
+	bounded := make([]sourceSummary, len(summaries))
+	for i, s := range summaries {
+		maxWords := int(float64(countWords(s.summary)) * ratio)
+		if maxWords < 50 {
+			maxWords = 50
+		}
+		bounded[i] = sourceSummary{
+			label:   s.label,
+			summary: truncateSummary(s.summary, maxWords),
+		}
+	}
+	return bounded
 }
 
 // assembleStage2Prompt builds the user prompt for the final assembly call.

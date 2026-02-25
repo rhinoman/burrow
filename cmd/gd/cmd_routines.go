@@ -406,7 +406,7 @@ func buildSynthesizer(routine *pipeline.Routine, cfg *config.Config) (synthesis.
 		case "local":
 			contextWindow = 8192
 		default: // "remote" or unset
-			contextWindow = 32768
+			contextWindow = 131072
 		}
 	}
 
