@@ -690,6 +690,82 @@ func TestLLMSynthesizerStripsThinkingPreamble(t *testing.T) {
 	}
 }
 
+// --- Local model compact prompt tests ---
+
+func TestLLMSynthesizerLocalModelCompactSystem(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+	synth.SetLocalModel(true)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// Local model should get compact system prompt
+	if !strings.Contains(provider.lastSystem, "factual report documents") {
+		t.Error("expected compact system prompt for local model")
+	}
+	// Should NOT contain the verbose instruction
+	if strings.Contains(provider.lastSystem, "static report document, not a conversation") {
+		t.Error("expected local model to NOT get verbose system prompt")
+	}
+}
+
+func TestLLMSynthesizerLocalModelCompactRules(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+	synth.SetLocalModel(true)
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// Local model should get consolidated RULES block
+	if !strings.Contains(provider.lastUser, "RULES:") {
+		t.Error("expected RULES block in local model user prompt")
+	}
+	// Should NOT have verbose separate instruction blocks
+	if strings.Contains(provider.lastUser, "When source data contains URLs or link fields") {
+		t.Error("expected local model to NOT get verbose URL instruction")
+	}
+}
+
+func TestLLMSynthesizerRemoteModelVerbosePrompts(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+	// localModel defaults to false
+
+	results := []*services.Result{
+		{Service: "test-svc", Tool: "fetch", Data: []byte(`data`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Brief", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// Remote/default should get verbose prompts
+	if !strings.Contains(provider.lastSystem, "static report document") {
+		t.Error("expected verbose system prompt for remote model")
+	}
+	if !strings.Contains(provider.lastUser, "When source data contains URLs") {
+		t.Error("expected verbose URL instruction for remote model")
+	}
+	if strings.Contains(provider.lastUser, "RULES:") {
+		t.Error("expected remote model to NOT get compact RULES block")
+	}
+}
+
 func TestLLMSynthesizerIncompleteDataInstruction(t *testing.T) {
 	provider := &fakeProvider{}
 	synth := NewLLMSynthesizer(provider, false)

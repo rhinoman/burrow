@@ -99,12 +99,24 @@ const (
 	missingDataInstruction = "When source data has missing or incomplete fields, always analyze what IS present. " +
 		"Never skip a section or declare \"none included\" because some records lack a field. " +
 		"Present the available data, note any limitations briefly in parentheses, and move on."
+
+	// Compact variants for local models — fewer tokens, same rules.
+	localStaticDocumentInstruction = "You write factual report documents. " +
+		"Start immediately with content. No chat, no reasoning, no greetings, no closings."
+
+	localInstructions = "\n\nRULES:\n" +
+		"1. Start with the report immediately. No preamble, no reasoning.\n" +
+		"2. Use exact URLs from the data as markdown links: [Title](URL)\n" +
+		"3. Include all specific numbers, dates, and names from the data.\n" +
+		"4. If data is missing or incomplete, report what IS present.\n" +
+		"5. No sign-offs or offers to help. End with the last section.\n"
 )
 
 // LLMSynthesizer uses an LLM provider for synthesis.
 type LLMSynthesizer struct {
 	provider         Provider
 	stripAttribution bool
+	localModel       bool
 	multiStage       MultiStageConfig
 }
 
@@ -113,6 +125,11 @@ type LLMSynthesizer struct {
 // before sending data to the provider (required for remote LLMs per spec).
 func NewLLMSynthesizer(provider Provider, stripAttribution bool) *LLMSynthesizer {
 	return &LLMSynthesizer{provider: provider, stripAttribution: stripAttribution}
+}
+
+// SetLocalModel enables compact prompt variants optimized for smaller local models.
+func (l *LLMSynthesizer) SetLocalModel(local bool) {
+	l.localModel = local
 }
 
 // SetMultiStage configures multi-stage synthesis behavior.
@@ -137,7 +154,11 @@ func (l *LLMSynthesizer) synthesizeSingle(ctx context.Context, title string, sys
 	if fullSystem != "" {
 		fullSystem += "\n\n"
 	}
-	fullSystem += staticDocumentInstruction
+	if l.localModel {
+		fullSystem += localStaticDocumentInstruction
+	} else {
+		fullSystem += staticDocumentInstruction
+	}
 
 	var userPrompt strings.Builder
 	userPrompt.WriteString("Generate a report titled: ")
@@ -175,15 +196,19 @@ func (l *LLMSynthesizer) synthesizeSingle(ctx context.Context, title string, sys
 		userPrompt.WriteString("\n")
 	}
 
-	userPrompt.WriteString("\n---\n")
-	userPrompt.WriteString(urlInstruction)
-	userPrompt.WriteString("\n")
+	if l.localModel {
+		userPrompt.WriteString(localInstructions)
+	} else {
+		userPrompt.WriteString("\n---\n")
+		userPrompt.WriteString(urlInstruction)
+		userPrompt.WriteString("\n")
 
-	userPrompt.WriteString("\n---\n")
-	userPrompt.WriteString(missingDataInstruction)
-	userPrompt.WriteString("\n")
+		userPrompt.WriteString("\n---\n")
+		userPrompt.WriteString(missingDataInstruction)
+		userPrompt.WriteString("\n")
 
-	userPrompt.WriteString("\n---\nBegin with report content immediately. No preamble, no reasoning, no conversational closing.\n")
+		userPrompt.WriteString("\n---\nBegin with report content immediately. No preamble, no reasoning, no conversational closing.\n")
+	}
 
 	result, err := l.provider.Complete(ctx, fullSystem, userPrompt.String())
 	if err != nil {

@@ -411,6 +411,7 @@ func buildSynthesizer(routine *pipeline.Routine, cfg *config.Config) (synthesis.
 	}
 
 	synth := synthesis.NewLLMSynthesizer(provider, stripAttribution)
+	synth.SetLocalModel(provCfg.Privacy == "local")
 	synth.SetMultiStage(synthesis.MultiStageConfig{
 		Strategy:        routine.Synthesis.Strategy,
 		SummaryMaxWords: routine.Synthesis.SummaryMaxWords,

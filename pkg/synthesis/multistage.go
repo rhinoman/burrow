@@ -31,6 +31,10 @@ const stage1SystemPrompt = "You are a data summarization assistant. Extract the 
 	"Remove redundant or boilerplate content. Output a concise summary in plain text. " +
 	"Begin immediately with the summary — no preamble."
 
+// localStage1SystemPrompt is a compact variant for local models.
+const localStage1SystemPrompt = "Extract key facts from the data below. " +
+	"Keep all URLs, dates, numbers, and names exactly. Output only the summary — no preamble."
+
 // summaryMaxWords returns the configured summary word target or the default.
 func (c MultiStageConfig) summaryMaxWords() int {
 	if c.SummaryMaxWords > 0 {
@@ -132,7 +136,11 @@ func (l *LLMSynthesizer) summarizeChunk(ctx context.Context, label, data, priori
 	userPrompt.WriteString("\n\n")
 	userPrompt.WriteString(fmt.Sprintf("Target length: approximately %d words.", l.multiStage.summaryMaxWords()))
 
-	summary, err := l.provider.Complete(ctx, stage1SystemPrompt, userPrompt.String())
+	sysPrompt := stage1SystemPrompt
+	if l.localModel {
+		sysPrompt = localStage1SystemPrompt
+	}
+	summary, err := l.provider.Complete(ctx, sysPrompt, userPrompt.String())
 	if err != nil {
 		return sourceSummary{label: label, err: err}
 	}
@@ -233,7 +241,11 @@ func (l *LLMSynthesizer) synthesizeMultiStage(ctx context.Context, title string,
 	if fullSystem != "" {
 		fullSystem += "\n\n"
 	}
-	fullSystem += staticDocumentInstruction
+	if l.localModel {
+		fullSystem += localStaticDocumentInstruction
+	} else {
+		fullSystem += staticDocumentInstruction
+	}
 
 	result, err := l.provider.Complete(ctx, fullSystem, userPrompt)
 	if err != nil {
@@ -295,15 +307,19 @@ func (l *LLMSynthesizer) assembleStage2Prompt(title string, summaries []sourceSu
 		b.WriteString("\n\n")
 	}
 
-	b.WriteString("\n---\n")
-	b.WriteString(urlInstruction)
-	b.WriteString("\n")
+	if l.localModel {
+		b.WriteString(localInstructions)
+	} else {
+		b.WriteString("\n---\n")
+		b.WriteString(urlInstruction)
+		b.WriteString("\n")
 
-	b.WriteString("\n---\n")
-	b.WriteString(missingDataInstruction)
-	b.WriteString("\n")
+		b.WriteString("\n---\n")
+		b.WriteString(missingDataInstruction)
+		b.WriteString("\n")
 
-	b.WriteString("\n---\nBegin with report content immediately. No preamble, no reasoning, no conversational closing.\n")
+		b.WriteString("\n---\nBegin with report content immediately. No preamble, no reasoning, no conversational closing.\n")
+	}
 
 	return b.String()
 }
