@@ -766,6 +766,82 @@ func TestLLMSynthesizerRemoteModelVerbosePrompts(t *testing.T) {
 	}
 }
 
+// --- Preprocessing integration tests ---
+
+func TestLLMSynthesizerPreprocessesJSON(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+	synth.SetPreprocess(true)
+
+	results := []*services.Result{
+		{Service: "weather", Tool: "forecast", Data: []byte(`{
+			"@context": "https://schema.org",
+			"temperature": {"value": 42, "unitCode": "wmoUnit:degF"},
+			"condition": "Clear"
+		}`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Weather Report", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// Preprocessed data should have key-value format, not raw JSON
+	if strings.Contains(provider.lastUser, `"@context"`) {
+		t.Error("expected @context metadata stripped by preprocessing")
+	}
+	if strings.Contains(provider.lastUser, "unitCode") {
+		t.Error("expected unitCode unwrapped by preprocessing")
+	}
+	if !strings.Contains(provider.lastUser, "temperature: 42") {
+		t.Error("expected preprocessed key-value format")
+	}
+	if !strings.Contains(provider.lastUser, "condition: Clear") {
+		t.Error("expected condition preserved")
+	}
+}
+
+func TestLLMSynthesizerNoPreprocessPlainText(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+	synth.SetPreprocess(true)
+
+	plainText := "This is already plain text, not JSON."
+	results := []*services.Result{
+		{Service: "rss", Tool: "feed", Data: []byte(plainText)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Feed", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// Plain text should pass through unchanged
+	if !strings.Contains(provider.lastUser, plainText) {
+		t.Error("expected plain text passed through unchanged")
+	}
+}
+
+func TestLLMSynthesizerPreprocessDisabled(t *testing.T) {
+	provider := &fakeProvider{}
+	synth := NewLLMSynthesizer(provider, false)
+	// preprocess defaults to false
+
+	results := []*services.Result{
+		{Service: "api", Tool: "get", Data: []byte(`{"@context": "test", "value": 1}`)},
+	}
+
+	_, err := synth.Synthesize(context.Background(), "Raw", "", results)
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	// When preprocessing is off, raw JSON should be sent
+	if !strings.Contains(provider.lastUser, `"@context"`) {
+		t.Error("expected raw JSON when preprocessing is disabled")
+	}
+}
+
 func TestLLMSynthesizerIncompleteDataInstruction(t *testing.T) {
 	provider := &fakeProvider{}
 	synth := NewLLMSynthesizer(provider, false)

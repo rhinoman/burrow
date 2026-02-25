@@ -165,6 +165,9 @@ func (l *LLMSynthesizer) summarizeSource(ctx context.Context, idx int, r *servic
 	}
 
 	data := string(r.Data)
+	if l.preprocess {
+		data = PreprocessData(data)
+	}
 	if l.stripAttribution {
 		data = stripServiceNames(data, []*services.Result{r})
 	}

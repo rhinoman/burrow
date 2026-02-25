@@ -412,6 +412,14 @@ func buildSynthesizer(routine *pipeline.Routine, cfg *config.Config) (synthesis.
 
 	synth := synthesis.NewLLMSynthesizer(provider, stripAttribution)
 	synth.SetLocalModel(provCfg.Privacy == "local")
+
+	// Resolve preprocessing: explicit config wins, nil = auto (local models).
+	preprocess := provCfg.Privacy == "local" // auto default
+	if routine.Synthesis.Preprocess != nil {
+		preprocess = *routine.Synthesis.Preprocess
+	}
+	synth.SetPreprocess(preprocess)
+
 	synth.SetMultiStage(synthesis.MultiStageConfig{
 		Strategy:        routine.Synthesis.Strategy,
 		SummaryMaxWords: routine.Synthesis.SummaryMaxWords,

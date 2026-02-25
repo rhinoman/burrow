@@ -45,6 +45,7 @@ type SynthesisConfig struct {
 	SummaryMaxWords int    `yaml:"summary_max_words,omitempty"`  // target words per summary (default: 500)
 	MaxSourceWords  int    `yaml:"max_source_words,omitempty"`   // max words per source before chunking (default: 10000)
 	Concurrency     int    `yaml:"concurrency,omitempty"`        // max concurrent stage 1 LLM calls (default: 1)
+	Preprocess      *bool  `yaml:"preprocess,omitempty"`         // nil=auto (local), true=always, false=never
 }
 
 // SourceConfig defines a single data source within a routine.

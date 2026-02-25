@@ -117,6 +117,7 @@ type LLMSynthesizer struct {
 	provider         Provider
 	stripAttribution bool
 	localModel       bool
+	preprocess       bool
 	multiStage       MultiStageConfig
 }
 
@@ -130,6 +131,12 @@ func NewLLMSynthesizer(provider Provider, stripAttribution bool) *LLMSynthesizer
 // SetLocalModel enables compact prompt variants optimized for smaller local models.
 func (l *LLMSynthesizer) SetLocalModel(local bool) {
 	l.localModel = local
+}
+
+// SetPreprocess enables deterministic JSON-to-text preprocessing of source data
+// before sending to the LLM. Reduces token count significantly for JSON-heavy sources.
+func (l *LLMSynthesizer) SetPreprocess(enabled bool) {
+	l.preprocess = enabled
 }
 
 // SetMultiStage configures multi-stage synthesis behavior.
@@ -187,6 +194,9 @@ func (l *LLMSynthesizer) synthesizeSingle(ctx context.Context, title string, sys
 			userPrompt.WriteString("\n")
 		} else {
 			data := string(r.Data)
+			if l.preprocess {
+				data = PreprocessData(data)
+			}
 			if l.stripAttribution {
 				data = stripServiceNames(data, results)
 			}
