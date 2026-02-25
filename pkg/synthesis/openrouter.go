@@ -13,10 +13,11 @@ import (
 
 // OpenRouterProvider implements Provider using the OpenAI-compatible chat completions API.
 type OpenRouterProvider struct {
-	endpoint string
-	apiKey   string
-	model    string
-	client   *http.Client
+	endpoint  string
+	apiKey    string
+	model     string
+	genParams GenerationParams
+	client    *http.Client
 }
 
 // NewOpenRouterProvider creates a provider for OpenRouter or any OpenAI-compatible endpoint.
@@ -47,10 +48,18 @@ func NewOpenRouterProviderWithTimeout(endpoint, apiKey, model string, timeoutSec
 	}
 }
 
+// SetGenerationParams configures optional generation parameters.
+func (o *OpenRouterProvider) SetGenerationParams(params GenerationParams) {
+	o.genParams = params
+}
+
 type openAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
+	Model       string          `json:"model"`
+	Messages    []openAIMessage `json:"messages"`
+	Stream      bool            `json:"stream"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
 }
 
 type openAIMessage struct {
@@ -80,10 +89,15 @@ func (o *OpenRouterProvider) Complete(ctx context.Context, systemPrompt, userPro
 		messages = append([]openAIMessage{{Role: "system", Content: systemPrompt}}, messages...)
 	}
 
-	body, err := json.Marshal(openAIRequest{
-		Model:    o.model,
-		Messages: messages,
-	})
+	reqBody := openAIRequest{
+		Model:       o.model,
+		Messages:    messages,
+		Temperature: o.genParams.Temperature,
+		TopP:        o.genParams.TopP,
+		MaxTokens:   o.genParams.MaxTokens,
+	}
+
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", fmt.Errorf("marshaling request: %w", err)
 	}

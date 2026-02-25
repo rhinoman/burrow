@@ -16,6 +16,7 @@ type OllamaProvider struct {
 	endpoint      string
 	model         string
 	contextWindow int
+	genParams     GenerationParams
 	client        *http.Client
 }
 
@@ -48,11 +49,16 @@ func NewOllamaProviderWithTimeout(endpoint, model string, timeoutSecs, contextWi
 	}
 }
 
+// SetGenerationParams configures optional generation parameters.
+func (o *OllamaProvider) SetGenerationParams(params GenerationParams) {
+	o.genParams = params
+}
+
 type ollamaRequest struct {
-	Model    string            `json:"model"`
-	Messages []ollamaMessage   `json:"messages"`
-	Stream   bool              `json:"stream"`
-	Options  map[string]int    `json:"options,omitempty"`
+	Model    string                 `json:"model"`
+	Messages []ollamaMessage        `json:"messages"`
+	Stream   bool                   `json:"stream"`
+	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
 type ollamaMessage struct {
@@ -83,8 +89,23 @@ func (o *OllamaProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 		Messages: messages,
 		Stream:   false,
 	}
+
+	// Build options map with context window and generation params.
+	opts := make(map[string]interface{})
 	if o.contextWindow > 0 {
-		ollamaReq.Options = map[string]int{"num_ctx": o.contextWindow}
+		opts["num_ctx"] = o.contextWindow
+	}
+	if o.genParams.Temperature != nil {
+		opts["temperature"] = *o.genParams.Temperature
+	}
+	if o.genParams.TopP != nil {
+		opts["top_p"] = *o.genParams.TopP
+	}
+	if o.genParams.MaxTokens > 0 {
+		opts["num_predict"] = o.genParams.MaxTokens
+	}
+	if len(opts) > 0 {
+		ollamaReq.Options = opts
 	}
 
 	body, err := json.Marshal(ollamaReq)

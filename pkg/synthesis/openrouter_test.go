@@ -2,6 +2,8 @@ package synthesis
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,5 +82,68 @@ func TestOpenRouterMalformedResponse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no choices") {
 		t.Errorf("expected 'no choices' error, got: %s", err.Error())
+	}
+}
+
+func TestOpenRouterGenerationParams(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices": [{"message": {"role": "assistant", "content": "ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	temp := 0.3
+	topP := 0.9
+	p := NewOpenRouterProviderWithTimeout(srv.URL, "key", "model", 0)
+	p.SetGenerationParams(GenerationParams{
+		Temperature: &temp,
+		TopP:        &topP,
+		MaxTokens:   4096,
+	})
+
+	_, err := p.Complete(context.Background(), "system", "user")
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if v, ok := capturedBody["temperature"]; !ok || v.(float64) != 0.3 {
+		t.Errorf("expected temperature=0.3, got %v", v)
+	}
+	if v, ok := capturedBody["top_p"]; !ok || v.(float64) != 0.9 {
+		t.Errorf("expected top_p=0.9, got %v", v)
+	}
+	if v, ok := capturedBody["max_tokens"]; !ok || int(v.(float64)) != 4096 {
+		t.Errorf("expected max_tokens=4096, got %v", v)
+	}
+}
+
+func TestOpenRouterNoGenerationParams(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices": [{"message": {"role": "assistant", "content": "ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenRouterProvider(srv.URL, "key", "model")
+	_, err := p.Complete(context.Background(), "", "user")
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// temperature, top_p, max_tokens should be absent (omitempty)
+	if _, ok := capturedBody["temperature"]; ok {
+		t.Error("expected temperature absent when not set")
+	}
+	if _, ok := capturedBody["top_p"]; ok {
+		t.Error("expected top_p absent when not set")
+	}
+	if _, ok := capturedBody["max_tokens"]; ok {
+		t.Error("expected max_tokens absent when not set")
 	}
 }

@@ -2,6 +2,8 @@ package synthesis
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,6 +75,69 @@ func TestOllamaContextCancellation(t *testing.T) {
 	_, err := p.Complete(ctx, "", "test")
 	if err == nil {
 		t.Fatal("expected cancellation error")
+	}
+}
+
+func TestOllamaGenerationParams(t *testing.T) {
+	var capturedBody ollamaRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message": {"role": "assistant", "content": "ok"}}`))
+	}))
+	defer srv.Close()
+
+	temp := 0.3
+	topP := 0.9
+	p := NewOllamaProviderWithTimeout(srv.URL, "test-model", 0, 32768)
+	p.SetGenerationParams(GenerationParams{
+		Temperature: &temp,
+		TopP:        &topP,
+		MaxTokens:   4096,
+	})
+
+	_, err := p.Complete(context.Background(), "system", "user")
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if capturedBody.Options == nil {
+		t.Fatal("expected options in request")
+	}
+	if v, ok := capturedBody.Options["num_ctx"]; !ok || int(v.(float64)) != 32768 {
+		t.Errorf("expected num_ctx=32768, got %v", v)
+	}
+	if v, ok := capturedBody.Options["temperature"]; !ok || v.(float64) != 0.3 {
+		t.Errorf("expected temperature=0.3, got %v", v)
+	}
+	if v, ok := capturedBody.Options["top_p"]; !ok || v.(float64) != 0.9 {
+		t.Errorf("expected top_p=0.9, got %v", v)
+	}
+	if v, ok := capturedBody.Options["num_predict"]; !ok || int(v.(float64)) != 4096 {
+		t.Errorf("expected num_predict=4096, got %v", v)
+	}
+}
+
+func TestOllamaNoGenerationParams(t *testing.T) {
+	var capturedBody ollamaRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message": {"role": "assistant", "content": "ok"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewOllamaProvider(srv.URL, "test-model")
+	_, err := p.Complete(context.Background(), "", "user")
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// No options should be sent when no params are set and no context window
+	if capturedBody.Options != nil && len(capturedBody.Options) > 0 {
+		t.Errorf("expected no options, got %v", capturedBody.Options)
 	}
 }
 

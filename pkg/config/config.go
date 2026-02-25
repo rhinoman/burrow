@@ -68,14 +68,17 @@ type LLMConfig struct {
 
 // ProviderConfig defines a single LLM provider.
 type ProviderConfig struct {
-	Name          string `yaml:"name"`
-	Type          string `yaml:"type"` // ollama | llamacpp | openrouter | passthrough
-	Endpoint      string `yaml:"endpoint,omitempty"`
-	APIKey        string `yaml:"api_key,omitempty"`
-	Model         string `yaml:"model,omitempty"`
-	Privacy       string `yaml:"privacy"`                    // local | remote
-	Timeout       int    `yaml:"timeout,omitempty"`           // Seconds; 0 means default (Ollama: 300, OpenRouter: 120)
-	ContextWindow int    `yaml:"context_window,omitempty"`    // Token limit; 0 means default (local: 8192, remote: 32768)
+	Name          string   `yaml:"name"`
+	Type          string   `yaml:"type"` // ollama | llamacpp | openrouter | passthrough
+	Endpoint      string   `yaml:"endpoint,omitempty"`
+	APIKey        string   `yaml:"api_key,omitempty"`
+	Model         string   `yaml:"model,omitempty"`
+	Privacy       string   `yaml:"privacy"`                    // local | remote
+	Timeout       int      `yaml:"timeout,omitempty"`           // Seconds; 0 means default (Ollama: 300, OpenRouter: 120)
+	ContextWindow int      `yaml:"context_window,omitempty"`    // Token limit; 0 means default (local: 8192, remote: 32768)
+	Temperature   *float64 `yaml:"temperature,omitempty"`       // nil = model default
+	TopP          *float64 `yaml:"top_p,omitempty"`             // nil = model default
+	MaxTokens     int      `yaml:"max_tokens,omitempty"`        // 0 = model default
 }
 
 // PrivacyConfig defines privacy-related settings.
